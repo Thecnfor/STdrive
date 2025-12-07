@@ -8,6 +8,8 @@
 /* ==========================================
  * 用户配置区域
  * ========================================== */
+#define MQTT_UART_HANDLE &huart1  /* 使用的串口句柄，例如 &huart1 或 &huart2 */
+
 #define WIFI_SSID       ""
 #define WIFI_PASSWORD   ""
 

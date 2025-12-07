@@ -36,14 +36,14 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
     
     /* 发送指令 */
     if (cmd != NULL) {
-        HAL_UART_Transmit(&huart1, (uint8_t *)cmd, strlen(cmd), 100);
+        HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t *)cmd, strlen(cmd), 100);
     }
 
     /* 循环接收 */
     while ((HAL_GetTick() - start_time) < timeout_ms) {
         uint8_t rx_char;
         /* 使用短超时 (1ms) 轮询，提高响应速度 */
-        if (HAL_UART_Receive(&huart1, &rx_char, 1, 1) == HAL_OK) {
+        if (HAL_UART_Receive(MQTT_UART_HANDLE, &rx_char, 1, 1) == HAL_OK) {
             if (idx < p_len - 1) {
                 p_buf[idx++] = rx_char;
                 p_buf[idx] = '\0';
@@ -77,7 +77,7 @@ static bool ESP_SendAT(const char *cmd, const char *expected, uint32_t timeout_m
  */
 static bool ESP_SendRaw(uint8_t *data, uint16_t len)
 {
-    HAL_UART_Transmit(&huart1, data, len, 100);
+    HAL_UART_Transmit(MQTT_UART_HANDLE, data, len, 100);
     return ESP_Execute(NULL, "SEND OK", NULL, 0, AT_CMD_TIMEOUT_NORMAL);
 }
 
@@ -286,7 +286,7 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
     bool msg_received = false;
 
     /* 非阻塞读取所有可用数据 */
-    while (HAL_UART_Receive(&huart1, &byte, 1, 0) == HAL_OK) {
+    while (HAL_UART_Receive(MQTT_UART_HANDLE, &byte, 1, 0) == HAL_OK) {
         if (rx_idx < RX_BUFFER_SIZE - 1) {
             rx_buffer[rx_idx++] = byte;
             rx_buffer[rx_idx] = 0;

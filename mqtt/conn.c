@@ -399,7 +399,13 @@ void MQTT_Run(void) {
                 
                 // 强制断开 TCP 连接，确保下次重试环境干净
                 SendAT("AT+CIPCLOSE\r\n");
-                HAL_Delay(500);
+                
+                // 增加延时，确保 ESP8266 完成清理工作
+                // 如果重启太快，模块可能还在忙
+                uint32_t close_start = HAL_GetTick();
+                while(HAL_GetTick() - close_start < 2000) {
+                     UART_Poll(); // 持续读取，清空缓冲区
+                }
                 
                 g_state = MQTT_STATE_RESET;
                 g_state_tick = now;

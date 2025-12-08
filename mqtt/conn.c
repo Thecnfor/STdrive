@@ -358,6 +358,72 @@ void MQTT_Heartbeat(void)
 }
 
 /* ==========================================
+ * 测试函数
+ * ========================================== */
+
+/**
+ * @brief 快速测试 MQTT 完整功能 (连接 -> 订阅 -> 循环发布/接收)
+ * @details 将此函数放在 main 函数的 while(1) 循环中调用
+ */
+void MQTT_Test_Run(void)
+{
+    static uint32_t last_pub_time = 0;
+    static bool is_subscribed = false;
+    
+    /* 1. 确保连接 */
+    if (!MQTT_IsConnected()) {
+        MQTT_Log(">> [测试] 正在连接 MQTT...\r\n");
+        if (MQTT_Start()) {
+            MQTT_Log(">> [测试] MQTT 连接成功\r\n");
+            is_subscribed = false; /* 重连后需要重新订阅 */
+        } else {
+            MQTT_Log(">> [测试] MQTT 连接失败，等待重试...\r\n");
+            HAL_Delay(2000); /* 失败后稍微延时，避免刷屏 */
+            return;
+        }
+    }
+
+    /* 2. 确保订阅 (连接成功后执行一次) */
+    if (!is_subscribed) {
+        HAL_Delay(500); /* 等待服务器就绪 */
+        if (MQTT_Subscribe("test/cmd")) {
+            MQTT_Log(">> [测试] 订阅主题 'test/cmd' 成功\r\n");
+            is_subscribed = true;
+        } else {
+            MQTT_Log(">> [测试] 订阅失败，稍后重试\r\n");
+        }
+    }
+
+    /* 3. 定时发布心跳/状态 (每 5 秒) */
+    if (HAL_GetTick() - last_pub_time > 5000) {
+        last_pub_time = HAL_GetTick();
+        
+        char msg[64];
+        /* 使用 HAL_GetTick 作为变化数据，方便观察 */
+        snprintf(msg, sizeof(msg), "online_tick_%lu", HAL_GetTick());
+        
+        if (MQTT_Publish("test/status", msg)) {
+             MQTT_Log(">> [测试] 发布 'test/status': %s 成功\r\n", msg);
+        } else {
+             MQTT_Log(">> [测试] 发布失败\r\n");
+             /* 发布失败通常意味着连接断开，下次循环会尝试重连 */
+        }
+    }
+
+    /* 4. 处理接收到的消息 */
+    char topic[64];
+    char payload[128];
+    if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
+        MQTT_Log(">> [测试] 收到消息: Topic=[%s] Payload=[%s]\r\n", topic, payload);
+        
+        /* 简单的交互：收到什么就回复什么 */
+        char reply[128];
+        snprintf(reply, sizeof(reply), "Echo: %s", payload);
+        MQTT_Publish("test/reply", reply);
+    }
+}
+
+/* ==========================================
  * MQTT 接收处理
  * ========================================== */
 static uint8_t rx_buffer[RX_BUFFER_SIZE];

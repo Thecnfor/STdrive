@@ -107,4 +107,10 @@ bool MQTT_Process(char *topic, uint16_t topic_len, char *payload, uint16_t paylo
  */
 void MQTT_AutoReconnect(void);
 
+/**
+ * @brief 快速测试 MQTT 完整功能 (连接 -> 订阅 -> 循环发布/接收)
+ * @details 将此函数放在 main 函数的 while(1) 循环中调用
+ */
+void MQTT_Test_Run(void);
+
 #endif /* __CONN_H */

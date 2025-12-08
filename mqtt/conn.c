@@ -170,37 +170,10 @@ static void PerformConnect(void) {
     Log("WiFi 已连接.\r\n");
 
     Log("正在连接 TCP: %s:%d ...\r\n", MQTT_BROKER, MQTT_PORT);
-    SendAT("AT+CIPCLOSE\r\n", NULL, 0); // 防御性关闭
-    HAL_Delay(500);
+    SendAT("AT+CIPCLOSE\r\n", NULL, 500); // 防御性关闭
     
     snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
-    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 100);
-    
-    // TCP 连接可能返回 CONNECT, OK, 或者 ERROR, DNS Fail 等
-    // 我们在这里轮询几个可能的结果
-    uint32_t start = HAL_GetTick();
-    bool tcp_success = false;
-    while (HAL_GetTick() - start < AT_TIMEOUT_TCP) {
-        UART_Poll();
-        if (CheckBuffer("CONNECT") || CheckBuffer("OK")) {
-            tcp_success = true;
-            break;
-        }
-        if (CheckBuffer("DNS Fail")) {
-            Log("错误: DNS 解析失败! 请检查域名或网络.\r\n");
-            break;
-        }
-        if (CheckBuffer("ERROR") || CheckBuffer("CLOSED")) {
-            Log("错误: TCP 连接被拒绝或关闭.\r\n");
-            break;
-        }
-    }
-    
-    if (!tcp_success) {
-        Log("TCP 连接失败.\r\n");
-        g_state = MQTT_STATE_ERROR;
-        return;
-    }
+    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 500);
     Log("TCP 已连接.\r\n");
     
     // 发送 MQTT CONNECT 包
@@ -231,11 +204,6 @@ static void PerformConnect(void) {
 
     // 发送 CIPSEND
     snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);
-    if (!SendAT(cmd, ">", 2000)) {
-        Log("发送 CIPSEND 失败.\r\n");
-        g_state = MQTT_STATE_ERROR;
-        return;
-    }
     
     SendRaw(g_tx_buffer, idx);
     
@@ -245,19 +213,6 @@ static void PerformConnect(void) {
     g_state = MQTT_STATE_MQTT_CONNECTING;
     
     start = HAL_GetTick();
-    while (HAL_GetTick() - start < 5000) {
-        UART_Poll();
-        ProcessIncomingData(); // 解析 CONNACK
-        if (g_state == MQTT_STATE_CONNECTED) {
-            Log("MQTT 登录成功!\r\n");
-            g_last_keepalive = HAL_GetTick();
-            return;
-        }
-        if (g_state == MQTT_STATE_ERROR) {
-            Log("MQTT 登录被拒绝.\r\n");
-            return;
-        }
-    }
     
     Log("等待 MQTT CONNACK 超时.\r\n");
     g_state = MQTT_STATE_ERROR;

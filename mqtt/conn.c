@@ -162,6 +162,10 @@ static void UART_Poll(void) {
     int count = 64;
     while (count-- > 0 && HAL_UART_Receive(MQTT_UART_HANDLE, &byte, 1, 0) == HAL_OK) {
         RingBuf_Write(byte);
+        #if MQTT_DEBUG_ENABLE && defined(MQTT_DEBUG_UART)
+        // 调试：将收到的 ESP8266 数据转发到调试串口
+        HAL_UART_Transmit(MQTT_DEBUG_UART, &byte, 1, 10);
+        #endif
     }
 }
 
@@ -191,28 +195,35 @@ static void Log(const char *fmt, ...) {
  * 核心逻辑
  * ========================================== */
 
-/* 检查环形缓冲区中是否包含子串 (简易实现) */
+/* 检查环形缓冲区中是否包含子串 (全缓冲搜索) */
 static bool CheckResponse(const char *expected) {
-    if (RingBuf_Available() < strlen(expected)) return false;
+    uint16_t available = RingBuf_Available();
+    uint16_t len = strlen(expected);
     
-    // 线性化缓冲区的副本用于搜索 (性能优化点)
-    char buf[256];
-    uint16_t len = 0;
-    uint16_t max_len = RingBuf_Available();
-    if (max_len > sizeof(buf) - 1) max_len = sizeof(buf) - 1;
+    if (available < len) return false;
     
-    for (uint16_t i = 0; i < max_len; i++) {
-        buf[i] = RingBuf_Peek(i);
+    // 在 RingBuffer 中直接搜索
+    // 搜索范围：从 0 到 available - len
+    for (uint16_t i = 0; i <= available - len; i++) {
+        bool match = true;
+        for (uint16_t j = 0; j < len; j++) {
+            if (RingBuf_Peek(i + j) != (uint8_t)expected[j]) {
+                match = false;
+                break;
+            }
+        }
+        
+        if (match) {
+            // 找到了，消耗掉直到该字符串结束的所有数据
+            // 包括该字符串之前的所有数据（视为无效数据或噪声）
+            RingBuf_Skip(i + len);
+            return true;
+        }
     }
-    buf[max_len] = 0;
     
-    char *p = strstr(buf, expected);
-    if (p) {
-        // 找到了，消耗掉直到该字符串结束
-        uint16_t discard = (p - buf) + strlen(expected);
-        RingBuf_Skip(discard);
-        return true;
-    }
+    // 可选：如果缓冲区快满了（例如 > 90%），且没找到，可以丢弃一部分旧数据防止死锁
+    // 但为安全起见，暂不自动丢弃，依赖状态机的超时机制来 Reset
+    
     return false;
 }
 
@@ -227,6 +238,9 @@ void MQTT_Run(void) {
         case MQTT_STATE_RESET:
             g_state = MQTT_STATE_INIT;
             g_at_state = AT_IDLE;
+            // 清空缓冲区，避免旧数据干扰
+            g_rx_head = 0;
+            g_rx_tail = 0;
             break;
 
         case MQTT_STATE_INIT:
@@ -360,7 +374,7 @@ void MQTT_Run(void) {
 
         case MQTT_STATE_ERROR:
             if (now - g_state_tick > 5000) {
-                Log("重试中...\r\n");
+                Log("重试中... (上次错误码: %d)\r\n", g_last_error);
                 g_state = MQTT_STATE_RESET;
                 g_state_tick = now;
             }

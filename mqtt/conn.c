@@ -165,7 +165,24 @@ static void PerformConnect(void) {
     
     Log("正在连接 WiFi: %s ...\r\n", WIFI_SSID);
     snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
-    if (!SendAT(cmd, "OK", AT_TIMEOUT_WIFI)) {
+    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 100);
+    
+    // 等待连接结果 (兼容 WIFI CONNECTED, WIFI GOT IP, OK)
+    uint32_t wifi_wait = HAL_GetTick();
+    bool wifi_ok = false;
+    while (HAL_GetTick() - wifi_wait < AT_TIMEOUT_WIFI) {
+        UART_Poll();
+        if (CheckBuffer("WIFI CONNECTED") || CheckBuffer("WIFI GOT IP") || CheckBuffer("OK")) {
+            wifi_ok = true;
+            break;
+        }
+        if (CheckBuffer("FAIL")) {
+             Log("WiFi 连接失败 (密码错误)\r\n");
+             break;
+        }
+    }
+    
+    if (!wifi_ok) {
         Log("WiFi 连接超时或失败!\r\n");
         g_state = MQTT_STATE_ERROR;
         return;
@@ -458,6 +475,9 @@ static void UART_Poll(void) {
     int count = 128;
     while (count-- > 0 && HAL_UART_Receive(MQTT_UART_HANDLE, &byte, 1, 0) == HAL_OK) {
         RingBuf_Write(byte);
+        #if MQTT_DEBUG_ENABLE && defined(MQTT_DEBUG_UART)
+        HAL_UART_Transmit(MQTT_DEBUG_UART, &byte, 1, 10);
+        #endif
     }
 }
 

@@ -167,26 +167,6 @@ static void PerformConnect(void) {
     snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
     HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 100);
     
-    // 等待连接结果 (兼容 WIFI CONNECTED, WIFI GOT IP, OK)
-    uint32_t wifi_wait = HAL_GetTick();
-    bool wifi_ok = false;
-    while (HAL_GetTick() - wifi_wait < AT_TIMEOUT_WIFI) {
-        UART_Poll();
-        if (CheckBuffer("WIFI CONNECTED") || CheckBuffer("WIFI GOT IP") || CheckBuffer("OK")) {
-            wifi_ok = true;
-            break;
-        }
-        if (CheckBuffer("FAIL")) {
-             Log("WiFi 连接失败 (密码错误)\r\n");
-             break;
-        }
-    }
-    
-    if (!wifi_ok) {
-        Log("WiFi 连接超时或失败!\r\n");
-        g_state = MQTT_STATE_ERROR;
-        return;
-    }
     Log("WiFi 已连接.\r\n");
 
     Log("正在连接 TCP: %s:%d ...\r\n", MQTT_BROKER, MQTT_PORT);

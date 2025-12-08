@@ -80,10 +80,17 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
         }
     }
 
+    if (expected == NULL) {
+        return true; /* 无期望响应，超时即完成 */
+    }
+
     MQTT_Log("[响应] 超时或失败\r\n");
     return false;
 }
 
+/**
+ * @brief 自动重连逻辑 (可在 while 或 RTOS 任务中定期调用)
+ */
 void MQTT_AutoReconnect(void)
 {
     if (!is_connected) {
@@ -156,7 +163,7 @@ static bool MQTT_SendPacket(uint8_t *packet, uint16_t len)
     char cmd_buf[32];
     sprintf(cmd_buf, "AT+CIPSEND=%d\r\n", len);
     
-    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_NORMAL)) {
+    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_LONG)) {
         if (ESP_SendRaw(packet, len)) {
             return true;
         }
@@ -421,7 +428,7 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
                         msg_received = true;
                         
                         if (topic && payload) {
-                            MQTT_Log("Recv: %s -> %s\r\n", topic, payload);
+                            MQTT_Log("接收: %s -> %s\r\n", topic, payload);
                         }
                     }
                     

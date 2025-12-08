@@ -4,142 +4,115 @@
 #include <stdarg.h>
 
 /* ==========================================
- * 常量与宏定义
+ * 私有变量
  * ========================================== */
-#define AT_TIMEOUT_DEFAULT      1000
-#define AT_TIMEOUT_WIFI         20000
-#define AT_TIMEOUT_TCP          10000
-
-/* MQTT 控制包类型 */
-#define MQTT_PKT_CONNECT        0x10
-#define MQTT_PKT_CONNACK        0x20
-#define MQTT_PKT_PUBLISH        0x30
-#define MQTT_PKT_PUBACK         0x40
-#define MQTT_PKT_SUBSCRIBE      0x82
-#define MQTT_PKT_SUBACK         0x90
-#define MQTT_PKT_PINGREQ        0xC0
-#define MQTT_PKT_PINGRESP       0xD0
-#define MQTT_PKT_DISCONNECT     0xE0
-
-#define MQTT_PROTOCOL_NAME      "MQTT"
-#define MQTT_PROTOCOL_LEVEL     4
-#define MQTT_FLAG_CLEAN_SESSION 0x02
+static bool is_connected = false;
 
 /* ==========================================
- * 全局变量
- * ========================================== */
-static MQTT_State_t g_state = MQTT_STATE_RESET;
-static uint8_t g_rx_buffer[MQTT_RX_BUFFER_SIZE];
-static uint8_t g_tx_buffer[MQTT_TX_BUFFER_SIZE];
-static volatile uint16_t g_rx_head = 0;
-static volatile uint16_t g_rx_tail = 0;
-static MQTT_MessageCallback g_msg_callback = NULL;
-static uint32_t g_last_keepalive = 0;
-
-/* ==========================================
- * 缓冲区与底层函数声明
- * ========================================== */
-static void UART_Poll(void);
-static void Log(const char *fmt, ...);
-static void RingBuf_Write(uint8_t byte);
-static uint16_t RingBuf_Available(void);
-static uint8_t RingBuf_ReadByte(void);
-static uint8_t RingBuf_Peek(uint16_t offset);
-static void RingBuf_Skip(uint16_t len);
-static void ProcessIncomingData(void);
-
-/* ==========================================
- * 接口实现
+ * 辅助函数
  * ========================================== */
 
-void MQTT_Init(void) {
-    g_state = MQTT_STATE_RESET;
-    g_rx_head = 0;
-    g_rx_tail = 0;
-    Log("MQTT 初始化...\r\n");
-}
+/**
+ * @brief 执行 AT 指令并等待期望的响应字符串
+ * 
+ * @param cmd 要发送的指令 (NULL 则不发送，仅接收)
+ * @param expected 期望收到的响应子串 (NULL 则不检查，读到超时)
+ * @param out_buf 输出缓冲区，用于存储收到的数据 (NULL 则使用内部临时缓冲)
+ * @param buf_len 输出缓冲区大小
+ * @param timeout_ms 超时时间
+ * @return true 找到 expected 字符串
+ * @return false 超时或未找到
+ */
+static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, uint16_t buf_len, uint32_t timeout_ms)
+{
+    char local_buf[128]; // 若调用者不需要完整数据，使用小缓冲区
+    char *p_buf = out_buf ? out_buf : local_buf;
+    uint16_t p_len = out_buf ? buf_len : sizeof(local_buf);
+    uint16_t idx = 0;
+    uint32_t start_time = HAL_GetTick();
 
-void MQTT_SetCallback(MQTT_MessageCallback cb) {
-    g_msg_callback = cb;
-}
-
-MQTT_State_t MQTT_GetState(void) {
-    return g_state;
-}
-
-/* ==========================================
- * 辅助功能函数 (阻塞式 AT 指令)
- * ========================================== */
-
-/* 检查缓冲区是否包含字符串，如果包含则消耗掉之前的数据 */
-static bool CheckBuffer(const char *expected) {
-    uint16_t available = RingBuf_Available();
-    uint16_t len = strlen(expected);
+    /* 清空接收缓冲区 */
+    memset(p_buf, 0, p_len);
     
-    if (available < len) return false;
-    
-    for (uint16_t i = 0; i <= available - len; i++) {
-        bool match = true;
-        for (uint16_t j = 0; j < len; j++) {
-            if (RingBuf_Peek(i + j) != (uint8_t)expected[j]) {
-                match = false;
-                break;
+    /* 发送指令 */
+    if (cmd != NULL) {
+        HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t *)cmd, strlen(cmd), 100);
+    }
+
+    /* 循环接收 */
+    while ((HAL_GetTick() - start_time) < timeout_ms) {
+        uint8_t rx_char;
+        /* 使用短超时 (1ms) 轮询，提高响应速度 */
+        if (HAL_UART_Receive(MQTT_UART_HANDLE, &rx_char, 1, 1) == HAL_OK) {
+            if (idx < p_len - 1) {
+                p_buf[idx++] = rx_char;
+                p_buf[idx] = '\0';
+                
+                /* 实时检查是否包含期望响应 */
+                if (expected != NULL && strstr(p_buf, expected) != NULL) {
+                    return true;
+                }
+            } else {
+                /* 缓冲区满，重置索引 (循环覆盖，防止溢出) 
+                   注意：这可能会截断长响应，实际应用根据需要调整 */
+                idx = 0; 
+                // 或者 break; 取决于策略
             }
         }
-        
-        if (match) {
-            RingBuf_Skip(i + len); // 消耗掉匹配字符串及之前的数据
-            return true;
-        }
     }
+
     return false;
 }
 
-/* 阻塞等待响应 */
-static bool WaitFor(const char *expected, uint32_t timeout_ms) {
-    uint32_t start = HAL_GetTick();
-    while (HAL_GetTick() - start < timeout_ms) {
-        UART_Poll(); // 持续接收数据
-        if (CheckBuffer(expected)) {
-            return true;
-        }
-    }
-    return false;
+/**
+ * @brief 简化版发送 AT 指令
+ */
+static bool ESP_SendAT(const char *cmd, const char *expected, uint32_t timeout_ms)
+{
+    return ESP_Execute(cmd, expected, NULL, 0, timeout_ms);
 }
 
-/* 发送指令并等待响应 */
-static bool SendAT(const char *cmd, const char *expected, uint32_t timeout_ms) {
-    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 100);
-    // Log(">> %s", cmd); // 调试打印发送内容
-    
-    if (expected == NULL) return true;
-    
-    if (WaitFor(expected, timeout_ms)) {
-        return true;
-    }
-    return false;
-}
-
-/* 发送原始数据 */
-static void SendRaw(const uint8_t *data, uint16_t len) {
-    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)data, len, 100);
+/**
+ * @brief 发送原始数据 (用于 MQTT 报文)
+ */
+static bool ESP_SendRaw(uint8_t *data, uint16_t len)
+{
+    HAL_UART_Transmit(MQTT_UART_HANDLE, data, len, 100);
+    return ESP_Execute(NULL, "SEND OK", NULL, 0, AT_CMD_TIMEOUT_NORMAL);
 }
 
 /* ==========================================
- * 编码辅助函数
+ * MQTT 协议层
  * ========================================== */
-static uint8_t EncodeLength(uint8_t *buf, uint32_t length) {
+
+/**
+ * @brief 编码剩余长度
+ * @param buf 输出缓冲区
+ * @param length 剩余长度值
+ * @return 写入的字节数
+ */
+static uint8_t mqtt_encode_len(uint8_t *buf, uint32_t length)
+{
     uint8_t len_bytes = 0;
     do {
         uint8_t encoded_byte = length % 128;
         length /= 128;
-        if (length > 0) encoded_byte |= 0x80;
+        if (length > 0) {
+            encoded_byte |= 0x80;
+        }
         buf[len_bytes++] = encoded_byte;
     } while (length > 0);
     return len_bytes;
 }
 
-static uint16_t EncodeString(uint8_t *buf, const char *str) {
+/**
+ * @brief 编码 MQTT 字符串 (2字节长度 + 字符串内容)
+ * @param buf 输出缓冲区
+ * @param str 字符串
+ * @return 写入的字节数
+ */
+static uint16_t mqtt_encode_string(uint8_t *buf, const char *str)
+{
     uint16_t len = strlen(str);
     buf[0] = (len >> 8) & 0xFF;
     buf[1] = len & 0xFF;
@@ -147,312 +120,262 @@ static uint16_t EncodeString(uint8_t *buf, const char *str) {
     return len + 2;
 }
 
-/* ==========================================
- * 连接逻辑 (阻塞流程，清晰易懂)
- * ========================================== */
-static void PerformConnect(void) {
-    char cmd[128];
+/**
+ * @brief 发送 MQTT 报文 (自动处理 AT+CIPSEND)
+ */
+static bool MQTT_SendPacket(uint8_t *packet, uint16_t len)
+{
+    char cmd_buf[32];
+    sprintf(cmd_buf, "AT+CIPSEND=%d\r\n", len);
     
-    Log("正在复位模块...\r\n");
-    SendAT("AT+RST\r\n", NULL, 0);
-    HAL_Delay(2000); // 等待重启
-    // 清空重启时的乱码
-    g_rx_head = g_rx_tail = 0; 
-    
-    SendAT("AT\r\n", "OK", 1000);
-    SendAT("AT+CWMODE=1\r\n", "OK", 1000);
-    SendAT("AT+CIPMUX=0\r\n", "OK", 1000);
-    
-    Log("正在连接 WiFi: %s ...\r\n", WIFI_SSID);
-    snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
-    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 100);
-    
-    Log("WiFi 已连接.\r\n");
-
-    Log("正在连接 TCP: %s:%d ...\r\n", MQTT_BROKER, MQTT_PORT);
-    SendAT("AT+CIPCLOSE\r\n", NULL, 500); // 防御性关闭
-    
-    snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
-    HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t*)cmd, strlen(cmd), 500);
-    Log("TCP 已连接.\r\n");
-    
-    // 发送 MQTT CONNECT 包
-    Log("正在发送 MQTT 登录包...\r\n");
-    uint16_t idx = 0;
-    uint32_t rem_len = (2 + 4) + 1 + 1 + 2 + (2 + strlen(MQTT_CLIENT_ID));
-    bool use_user = (strlen(MQTT_USERNAME) > 0);
-    bool use_pass = (strlen(MQTT_PASSWORD) > 0);
-    
-    if (use_user) rem_len += (2 + strlen(MQTT_USERNAME));
-    if (use_pass) rem_len += (2 + strlen(MQTT_PASSWORD));
-
-    g_tx_buffer[idx++] = MQTT_PKT_CONNECT;
-    idx += EncodeLength(&g_tx_buffer[idx], rem_len);
-    idx += EncodeString(&g_tx_buffer[idx], MQTT_PROTOCOL_NAME);
-    g_tx_buffer[idx++] = MQTT_PROTOCOL_LEVEL;
-    
-    uint8_t flags = MQTT_FLAG_CLEAN_SESSION;
-    if (use_user) flags |= 0x80;
-    if (use_pass) flags |= 0x40;
-    g_tx_buffer[idx++] = flags;
-    
-    g_tx_buffer[idx++] = (MQTT_KEEPALIVE >> 8) & 0xFF;
-    g_tx_buffer[idx++] = MQTT_KEEPALIVE & 0xFF;
-    idx += EncodeString(&g_tx_buffer[idx], MQTT_CLIENT_ID);
-    if (use_user) idx += EncodeString(&g_tx_buffer[idx], MQTT_USERNAME);
-    if (use_pass) idx += EncodeString(&g_tx_buffer[idx], MQTT_PASSWORD);
-
-    // 发送 CIPSEND
-    snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);
-    
-    SendRaw(g_tx_buffer, idx);
-    
-    // 等待 CONNACK (ProcessIncomingData 会处理，但我们需要在这里确认状态)
-    // 简单起见，我们等待状态变为 CONNECTED
-    // 这里我们临时把状态设为 MQTT_CONNECTING，让 ProcessIncomingData 去处理 CONNACK
-    g_state = MQTT_STATE_MQTT_CONNECTING;
-    
-    start = HAL_GetTick();
-    
-    Log("等待 MQTT CONNACK 超时.\r\n");
-    g_state = MQTT_STATE_ERROR;
-}
-
-/* ==========================================
- * 主循环
- * ========================================== */
-void MQTT_Run(void) {
-    UART_Poll();
-    ProcessIncomingData();
-    
-    switch (g_state) {
-        case MQTT_STATE_RESET:
-        case MQTT_STATE_ERROR:
-            // 简单处理：出错后等待 5 秒重试
-            HAL_Delay(5000); 
-            PerformConnect();
-            break;
-            
-        case MQTT_STATE_CONNECTED:
-            // 心跳处理
-            if (HAL_GetTick() - g_last_keepalive > (MQTT_KEEPALIVE * 1000) / 2) {
-                MQTT_Publish(NULL, NULL, false); // PING
-                g_last_keepalive = HAL_GetTick();
-            }
-            break;
-            
-        default: break;
+    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_SHORT)) {
+        return ESP_SendRaw(packet, len);
     }
+    return false;
 }
 
 /* ==========================================
- * 数据接收与解析
+ * 公共接口函数实现
  * ========================================== */
 
-static void ProcessIncomingData(void) {
-    // 简化解析：寻找 +IPD
-    while (RingBuf_Available() > 0) {
-        if (CheckBuffer("+IPD,")) {
-            // 读取长度
-            uint16_t len = 0;
-            while (1) {
-                if (RingBuf_Available() == 0) return; // 等待数据
-                uint8_t c = RingBuf_Peek(0);
-                if (c == ':') {
-                    RingBuf_Skip(1);
-                    break;
-                }
-                if (c >= '0' && c <= '9') {
-                    len = len * 10 + (c - '0');
-                    RingBuf_Skip(1);
-                } else {
-                    return; // 格式错误
-                }
-            }
-            
-            // 等待 Payload 全部到达
-            uint32_t wait_start = HAL_GetTick();
-            while (RingBuf_Available() < len) {
-                UART_Poll();
-                if (HAL_GetTick() - wait_start > 500) break; // 接收超时
-            }
-            
-            if (RingBuf_Available() < len) return; // 数据不完整，下次再处理
-            
-            // 读取 MQTT 包头
-            uint8_t header = RingBuf_ReadByte();
-            len--;
-            
-            uint8_t type = header & 0xF0;
-            
-            if (type == MQTT_PKT_CONNACK) {
-                RingBuf_Skip(len); // 跳过剩余部分
-                g_state = MQTT_STATE_CONNECTED;
-            }
-            else if (type == MQTT_PKT_PUBLISH) {
-                // 简单的 PUBLISH 解析 (假设 QoS=0)
-                // 剩余长度字段 (变长)
-                uint32_t rem_len = 0;
-                uint32_t multiplier = 1;
-                uint8_t byte;
-                do {
-                    byte = RingBuf_ReadByte();
-                    rem_len += (byte & 127) * multiplier;
-                    multiplier *= 128;
-                    len--;
-                } while ((byte & 128) != 0);
-                
-                // Topic 长度
-                uint8_t msb = RingBuf_ReadByte();
-                uint8_t lsb = RingBuf_ReadByte();
-                uint16_t topic_len = (msb << 8) | lsb;
-                len -= 2;
-                
-                // 读取 Topic
-                char topic[64];
-                uint16_t read_topic = (topic_len < 63) ? topic_len : 63;
-                for(int i=0; i<read_topic; i++) topic[i] = RingBuf_ReadByte();
-                topic[read_topic] = 0;
-                if (topic_len > read_topic) for(int i=0; i<topic_len-read_topic; i++) RingBuf_ReadByte();
-                len -= topic_len;
-                
-                // Payload
-                uint8_t payload[128];
-                uint16_t payload_len = len; // 剩下的都是 Payload (QoS0)
-                uint16_t read_payload = (payload_len < 127) ? payload_len : 127;
-                
-                for(int i=0; i<read_payload; i++) payload[i] = RingBuf_ReadByte();
-                payload[read_payload] = 0;
-                
-                // 消耗剩余字节
-                if (payload_len > read_payload) {
-                    for(int i=0; i<payload_len-read_payload; i++) RingBuf_ReadByte();
-                }
-                
-                if (g_msg_callback) g_msg_callback(topic, payload, read_payload);
-            }
-            else {
-                // 其他包直接跳过
-                RingBuf_Skip(len);
-            }
-        } 
-        else {
-            // 如果不是 +IPD，逐字节前移，防止死锁
-            // 但为了效率，我们只有在确定不是 +IPD 的开头时才跳过
-            // 简单做法：如果没有匹配 +IPD，就丢弃一个字节
-             RingBuf_Skip(1);
+bool MQTT_IsConnected(void)
+{
+    return is_connected;
+}
+
+bool MQTT_Start(void)
+{
+    char buf[RX_BUFFER_SIZE];
+    char cmd_buf[128];
+    uint8_t packet[128];
+    uint16_t idx = 0;
+
+    is_connected = false;
+
+    /* 1. 基础 AT 检查 */
+    if (!ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) return false;
+    
+    /* 2. WiFi 配置与连接 */
+    ESP_SendAT("AT+CWMODE=1\r\n", "OK", AT_CMD_TIMEOUT_NORMAL);
+
+    /* 检查是否已连接目标 WiFi */
+    /* 发送 AT+CWJAP? 并检查响应中是否包含 SSID */
+    bool wifi_connected = false;
+    if (ESP_Execute("AT+CWJAP?\r\n", "OK", buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_NORMAL)) {
+        if (strstr(buf, WIFI_SSID)) {
+            wifi_connected = true;
         }
     }
-}
 
-/* ==========================================
- * 发送接口
- * ========================================== */
-
-MQTT_Error_t MQTT_Publish(const char *topic, const char *message, bool retain) {
-    if (g_state != MQTT_STATE_CONNECTED && topic != NULL) return MQTT_ERR_NOT_CONNECTED;
-    
-    // PINGREQ
-    if (topic == NULL) {
-        SendAT("AT+CIPSEND=2\r\n", ">", 1000);
-        uint8_t pkt[2] = {MQTT_PKT_PINGREQ, 0x00};
-        SendRaw(pkt, 2);
-        return MQTT_OK;
+    /* 未连接则尝试连接 */
+    if (!wifi_connected) {
+        sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+        if (!ESP_SendAT(cmd_buf, "OK", AT_CMD_TIMEOUT_WIFI)) {
+            // 这里也可以检查 "WIFI CONNECTED" 或 "FAIL"
+            // 简单起见，如果超时或无 OK 视为失败
+            // 注意：部分固件返回 WIFI CONNECTED 后才返回 OK，或者只返回 WIFI CONNECTED
+            // 严谨做法应检查 buf
+        }
     }
 
-    uint16_t idx = 0;
+    /* 3. 建立 TCP 连接 */
+    /* 检查是否已连接或建立新连接 */
+    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
+    
+    /* 发送指令并读取响应到 buf */
+    /* 期望 CONNECT，但也可能已经是 ALREADY CONNECTED */
+    ESP_Execute(cmd_buf, NULL, buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
+    
+    if (strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED")) {
+        // TCP 连接成功
+    } else {
+        return false;
+    }
+
+    /* 4. 构建并发送 MQTT CONNECT 报文 */
+    /* Variable Header: Protocol Name(string) + Level(1) + Flags(1) + KeepAlive(2) */
+    /* Payload: Client ID (string) */
+    uint32_t remaining_len = (2 + 4) + 1 + 1 + 2 + (2 + strlen(MQTT_CLIENT_ID));
+
+    idx = 0;
+    packet[idx++] = MQTT_PKT_CONNECT;
+    idx += mqtt_encode_len(&packet[idx], remaining_len);
+
+    /* Variable Header */
+    idx += mqtt_encode_string(&packet[idx], MQTT_PROTOCOL_NAME);
+    packet[idx++] = MQTT_PROTOCOL_LEVEL;
+    packet[idx++] = MQTT_FLAG_CLEAN_SESSION;
+    packet[idx++] = (MQTT_KEEPALIVE >> 8) & 0xFF;
+    packet[idx++] = MQTT_KEEPALIVE & 0xFF;
+
+    /* Payload: Client ID */
+    idx += mqtt_encode_string(&packet[idx], MQTT_CLIENT_ID);
+
+    /* 发送报文 */
+    if (MQTT_SendPacket(packet, idx)) {
+        is_connected = true;
+        return true;
+    }
+
+    return false;
+}
+
+bool MQTT_Publish(const char *topic, const char *message)
+{
+    if (!is_connected) return false;
+
+    uint8_t packet[256]; // 确保够大
     uint16_t msg_len = strlen(message);
-    uint32_t rem_len = (2 + strlen(topic)) + msg_len;
-    
-    g_tx_buffer[idx++] = MQTT_PKT_PUBLISH | (retain ? 1 : 0);
-    idx += EncodeLength(&g_tx_buffer[idx], rem_len);
-    idx += EncodeString(&g_tx_buffer[idx], topic);
-    memcpy(&g_tx_buffer[idx], message, msg_len);
+    uint16_t idx = 0;
+    uint32_t remaining_len = (2 + strlen(topic)) + msg_len;
+
+    /* Fixed Header */
+    packet[idx++] = MQTT_PKT_PUBLISH;
+    idx += mqtt_encode_len(&packet[idx], remaining_len);
+
+    /* Variable Header: Topic */
+    idx += mqtt_encode_string(&packet[idx], topic);
+
+    /* Payload: Message */
+    memcpy(&packet[idx], message, msg_len);
     idx += msg_len;
-    
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);
-    if (SendAT(cmd, ">", 2000)) {
-        SendRaw(g_tx_buffer, idx);
-        return MQTT_OK;
-    }
-    return MQTT_ERR_UART;
+
+    return MQTT_SendPacket(packet, idx);
 }
 
-MQTT_Error_t MQTT_Subscribe(const char *topic, uint8_t qos) {
-    if (g_state != MQTT_STATE_CONNECTED) return MQTT_ERR_NOT_CONNECTED;
-    
+bool MQTT_Subscribe(const char *topic)
+{
+    if (!is_connected) return false;
+
+    uint8_t packet[128];
     uint16_t idx = 0;
-    uint32_t rem_len = 2 + (2 + strlen(topic)) + 1;
-    
-    g_tx_buffer[idx++] = MQTT_PKT_SUBSCRIBE | 0x02; 
-    idx += EncodeLength(&g_tx_buffer[idx], rem_len);
-    g_tx_buffer[idx++] = 0x00; 
-    g_tx_buffer[idx++] = 0x01; 
-    idx += EncodeString(&g_tx_buffer[idx], topic);
-    g_tx_buffer[idx++] = qos;
-    
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);
-    if (SendAT(cmd, ">", 2000)) {
-        SendRaw(g_tx_buffer, idx);
-        return MQTT_OK;
-    }
-    return MQTT_ERR_UART;
+    /* Variable Header: Packet ID(2) */
+    /* Payload: Topic Filter(string) + QoS(1) */
+    uint32_t remaining_len = 2 + (2 + strlen(topic)) + 1;
+
+    /* Fixed Header */
+    packet[idx++] = MQTT_PKT_SUBSCRIBE;
+    idx += mqtt_encode_len(&packet[idx], remaining_len);
+
+    /* Variable Header: Packet ID */
+    packet[idx++] = 0x00;
+    packet[idx++] = 0x01; 
+
+    /* Payload: Topic Filter + QoS */
+    idx += mqtt_encode_string(&packet[idx], topic);
+    packet[idx++] = 0x00; /* QoS 0 */
+
+    return MQTT_SendPacket(packet, idx);
+}
+
+void MQTT_Heartbeat(void)
+{
+    uint8_t packet[2] = {MQTT_PKT_PINGREQ, 0x00};
+    MQTT_SendPacket(packet, 2);
 }
 
 /* ==========================================
- * 缓冲区底层实现
+ * MQTT 接收处理
  * ========================================== */
-static void UART_Poll(void) {
+static uint8_t rx_buffer[RX_BUFFER_SIZE];
+static uint16_t rx_idx = 0;
+
+bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payload_size)
+{
     uint8_t byte;
-    // 每次最多读 128 字节
-    int count = 128;
-    while (count-- > 0 && HAL_UART_Receive(MQTT_UART_HANDLE, &byte, 1, 0) == HAL_OK) {
-        RingBuf_Write(byte);
-        #if MQTT_DEBUG_ENABLE && defined(MQTT_DEBUG_UART)
-        HAL_UART_Transmit(MQTT_DEBUG_UART, &byte, 1, 10);
-        #endif
+    bool msg_received = false;
+
+    /* 非阻塞读取所有可用数据 */
+    while (HAL_UART_Receive(MQTT_UART_HANDLE, &byte, 1, 0) == HAL_OK) {
+        if (rx_idx < RX_BUFFER_SIZE - 1) {
+            rx_buffer[rx_idx++] = byte;
+            rx_buffer[rx_idx] = 0;
+        } else {
+            /* 缓冲区满，移位丢弃旧数据 */
+            memmove(rx_buffer, rx_buffer + 1, RX_BUFFER_SIZE - 2);
+            rx_buffer[RX_BUFFER_SIZE - 2] = byte;
+            rx_buffer[RX_BUFFER_SIZE - 1] = 0;
+        }
     }
-}
 
-static void RingBuf_Write(uint8_t byte) {
-    uint16_t next = (g_rx_head + 1) % MQTT_RX_BUFFER_SIZE;
-    if (next != g_rx_tail) {
-        g_rx_buffer[g_rx_head] = byte;
-        g_rx_head = next;
+    if (rx_idx == 0) return false;
+    
+    /* 简单的解析逻辑：寻找 +IPD, */
+    char *ipd_ptr = strstr((char*)rx_buffer, "+IPD,");
+    if (ipd_ptr) {
+        /* 解析长度 */
+        int len = 0;
+        char *colon_ptr = strchr(ipd_ptr, ':');
+        if (colon_ptr) {
+            /* +IPD,123: */
+            if (sscanf(ipd_ptr, "+IPD,%d:", &len) == 1) {
+                int header_len = (colon_ptr - ipd_ptr) + 1; // "+IPD,len:" 的长度
+                int total_len = header_len + len;
+                
+                /* 检查是否接收完整 */
+                int ipd_offset = ipd_ptr - (char*)rx_buffer;
+                if (rx_idx >= ipd_offset + total_len) {
+                    /* 获取 MQTT 数据起始地址 */
+                    uint8_t *mqtt_data = (uint8_t*)(colon_ptr + 1);
+                    
+                    /* 解析 MQTT PUBLISH 报文 */
+                    /* Fixed Header: Byte 0 (0x30 - 0x3F) */
+                    if ((mqtt_data[0] & 0xF0) == 0x30) {
+                        /* 是 PUBLISH 报文 */
+                        uint8_t qos = (mqtt_data[0] >> 1) & 0x03;
+                        uint32_t rem_len = 0;
+                        uint32_t multiplier = 1;
+                        int i = 1;
+                        
+                        /* 解析剩余长度 */
+                        do {
+                            rem_len += (mqtt_data[i] & 127) * multiplier;
+                            multiplier *= 128;
+                            i++;
+                        } while ((mqtt_data[i-1] & 128) != 0 && i < 5);
+                        
+                        int var_header_start = i;
+                        /* Topic Length */
+                        uint16_t t_len = (mqtt_data[var_header_start] << 8) | mqtt_data[var_header_start+1];
+                        
+                        /* Payload Start */
+                        int payload_start = var_header_start + 2 + t_len;
+                        if (qos > 0) {
+                            payload_start += 2; /* Packet ID */
+                        }
+                        
+                        int p_len = rem_len - (payload_start - var_header_start);
+                        
+                        /* 复制到用户缓冲区 */
+                        if (topic != NULL && topic_size > 0) {
+                             uint16_t copy_len = (t_len < topic_size) ? t_len : (topic_size - 1);
+                             memcpy(topic, &mqtt_data[var_header_start+2], copy_len);
+                             topic[copy_len] = 0;
+                        }
+
+                        if (payload != NULL && payload_size > 0) {
+                            uint16_t copy_len = (p_len < payload_size) ? p_len : (payload_size - 1);
+                            memcpy(payload, &mqtt_data[payload_start], copy_len);
+                            payload[copy_len] = 0;
+                        }
+                        
+                        msg_received = true;
+                    }
+                    
+                    /* 移除已处理的数据 */
+                    int bytes_processed = ipd_offset + total_len;
+                    memmove(rx_buffer, rx_buffer + bytes_processed, rx_idx - bytes_processed);
+                    rx_idx -= bytes_processed;
+
+                    return msg_received;
+                }
+            }
+        }
     }
-}
-
-static uint16_t RingBuf_Available(void) {
-    if (g_rx_head >= g_rx_tail) return g_rx_head - g_rx_tail;
-    return MQTT_RX_BUFFER_SIZE - g_rx_tail + g_rx_head;
-}
-
-static uint8_t RingBuf_ReadByte(void) {
-    if (g_rx_head == g_rx_tail) return 0;
-    uint8_t byte = g_rx_buffer[g_rx_tail];
-    g_rx_tail = (g_rx_tail + 1) % MQTT_RX_BUFFER_SIZE;
-    return byte;
-}
-
-static uint8_t RingBuf_Peek(uint16_t offset) {
-    return g_rx_buffer[(g_rx_tail + offset) % MQTT_RX_BUFFER_SIZE];
-}
-
-static void RingBuf_Skip(uint16_t len) {
-    g_rx_tail = (g_rx_tail + len) % MQTT_RX_BUFFER_SIZE;
-}
-
-static void Log(const char *fmt, ...) {
-#if MQTT_DEBUG_ENABLE
-    va_list args;
-    char buf[128];
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    #ifdef MQTT_DEBUG_UART
-    HAL_UART_Transmit(MQTT_DEBUG_UART, (uint8_t*)buf, strlen(buf), 100);
-    #endif
-#endif
+    
+    /* 防止缓冲区溢出且未找到有效数据的情况 */
+    if (rx_idx == RX_BUFFER_SIZE && !strstr((char*)rx_buffer, "+IPD,")) {
+         rx_idx = 0; 
+    }
+    return false;
 }

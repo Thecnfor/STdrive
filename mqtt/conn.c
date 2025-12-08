@@ -337,13 +337,18 @@ void MQTT_Run(void) {
                 if (use_pass) flags |= 0x40;
                 g_tx_buffer[idx++] = flags;
                 
-                Log("DEBUG: CONNECT Flags=0x%02X, CID_Len=%d\r\n", flags, strlen(MQTT_CLIENT_ID));
+                // Log("DEBUG: CONNECT Flags=0x%02X, CID_Len=%d\r\n", flags, strlen(MQTT_CLIENT_ID));
 
                 g_tx_buffer[idx++] = (MQTT_KEEPALIVE >> 8) & 0xFF;
                 g_tx_buffer[idx++] = MQTT_KEEPALIVE & 0xFF;
                 idx += EncodeString(&g_tx_buffer[idx], MQTT_CLIENT_ID);
                 if (use_user) idx += EncodeString(&g_tx_buffer[idx], MQTT_USERNAME);
                 if (use_pass) idx += EncodeString(&g_tx_buffer[idx], MQTT_PASSWORD);
+
+                // 调试：打印数据包 HEX
+                Log("PKT HEX: ");
+                for(int i=0; i<idx; i++) Log("%02X ", g_tx_buffer[i]);
+                Log("\r\n");
 
                 char cmd[32];
                 snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);

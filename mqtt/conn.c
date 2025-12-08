@@ -252,6 +252,8 @@ void MQTT_Run(void) {
             } else if (g_at_state == AT_WAIT_RESPONSE) {
                 if (CheckResponse("OK")) {
                     SendAT("AT+CWMODE=1\r\n");
+                    HAL_Delay(100);
+                    SendAT("AT+CIPMUX=0\r\n"); // 强制单连接模式
                     g_at_state = AT_IDLE;
                     g_state = MQTT_STATE_WIFI_CONNECTING;
                     g_retry_count = 0;
@@ -287,6 +289,10 @@ void MQTT_Run(void) {
 
         case MQTT_STATE_TCP_CONNECTING:
             if (g_at_state == AT_IDLE) {
+                // 先尝试关闭可能存在的旧连接，防止 ERROR ALREADY CONNECTED
+                SendAT("AT+CIPCLOSE\r\n");
+                HAL_Delay(200);
+                
                 char cmd[128];
                 snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
                 SendAT(cmd);
@@ -311,9 +317,15 @@ void MQTT_Run(void) {
             if (g_at_state == AT_IDLE) {
                 /* 构建 MQTT CONNECT */
                 uint16_t idx = 0;
+                
+                // 强制禁用用户名密码 (Debug)
+                // 如果这样能连上，说明之前的宏定义有问题
+                bool use_user = false; // (strlen(MQTT_USERNAME) > 0);
+                bool use_pass = false; // (strlen(MQTT_PASSWORD) > 0);
+
                 uint32_t rem_len = (2 + 4) + 1 + 1 + 2 + (2 + strlen(MQTT_CLIENT_ID));
-                if (strlen(MQTT_USERNAME) > 0) rem_len += (2 + strlen(MQTT_USERNAME));
-                if (strlen(MQTT_PASSWORD) > 0) rem_len += (2 + strlen(MQTT_PASSWORD));
+                if (use_user) rem_len += (2 + strlen(MQTT_USERNAME));
+                if (use_pass) rem_len += (2 + strlen(MQTT_PASSWORD));
 
                 g_tx_buffer[idx++] = MQTT_PKT_CONNECT;
                 idx += EncodeLength(&g_tx_buffer[idx], rem_len);
@@ -321,15 +333,17 @@ void MQTT_Run(void) {
                 g_tx_buffer[idx++] = MQTT_PROTOCOL_LEVEL;
                 
                 uint8_t flags = MQTT_FLAG_CLEAN_SESSION;
-                if (strlen(MQTT_USERNAME) > 0) flags |= 0x80;
-                if (strlen(MQTT_PASSWORD) > 0) flags |= 0x40;
+                if (use_user) flags |= 0x80;
+                if (use_pass) flags |= 0x40;
                 g_tx_buffer[idx++] = flags;
                 
+                Log("DEBUG: CONNECT Flags=0x%02X, CID_Len=%d\r\n", flags, strlen(MQTT_CLIENT_ID));
+
                 g_tx_buffer[idx++] = (MQTT_KEEPALIVE >> 8) & 0xFF;
                 g_tx_buffer[idx++] = MQTT_KEEPALIVE & 0xFF;
                 idx += EncodeString(&g_tx_buffer[idx], MQTT_CLIENT_ID);
-                if (strlen(MQTT_USERNAME) > 0) idx += EncodeString(&g_tx_buffer[idx], MQTT_USERNAME);
-                if (strlen(MQTT_PASSWORD) > 0) idx += EncodeString(&g_tx_buffer[idx], MQTT_PASSWORD);
+                if (use_user) idx += EncodeString(&g_tx_buffer[idx], MQTT_USERNAME);
+                if (use_pass) idx += EncodeString(&g_tx_buffer[idx], MQTT_PASSWORD);
 
                 char cmd[32];
                 snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);
@@ -375,6 +389,11 @@ void MQTT_Run(void) {
         case MQTT_STATE_ERROR:
             if (now - g_state_tick > 5000) {
                 Log("重试中... (上次错误码: %d)\r\n", g_last_error);
+                
+                // 强制断开 TCP 连接，确保下次重试环境干净
+                SendAT("AT+CIPCLOSE\r\n");
+                HAL_Delay(500);
+                
                 g_state = MQTT_STATE_RESET;
                 g_state_tick = now;
             }

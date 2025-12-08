@@ -320,12 +320,29 @@ void MQTT_Run(void) {
                 char cmd[32];
                 snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", idx);
                 SendAT(cmd);
-                HAL_Delay(50); /* 等待 > */
-                SendRaw(g_tx_buffer, idx);
                 
-                g_at_state = AT_WAIT_RESPONSE;
-                g_at_start_tick = now;
-                g_at_timeout = 5000;
+                // 等待 '>' 提示符
+                uint32_t wait_start = HAL_GetTick();
+                bool prompt_received = false;
+                while (HAL_GetTick() - wait_start < 1000) {
+                    UART_Poll(); 
+                    if (CheckResponse(">")) {
+                        prompt_received = true;
+                        break;
+                    }
+                }
+
+                if (prompt_received) {
+                    SendRaw(g_tx_buffer, idx);
+                    
+                    g_at_state = AT_WAIT_RESPONSE;
+                    g_at_start_tick = now;
+                    g_at_timeout = 5000;
+                } else {
+                    Log("错误: 等待 '>' 超时\r\n");
+                    g_state = MQTT_STATE_ERROR;
+                    g_last_error = MQTT_ERR_UART;
+                }
             } else {
                 // 等待 CONNACK (在 ProcessPacket 中处理)
                 if (now - g_at_start_tick > g_at_timeout) {
@@ -419,12 +436,21 @@ static void ProcessPacket(void) {
                  RingBuf_Read(&len_byte);
             }
             
-            RingBuf_Skip(2); // Flags + RC
-            
-            g_state = MQTT_STATE_CONNECTED;
-            g_at_state = AT_IDLE;
-            g_keepalive_tick = HAL_GetTick();
-            Log("MQTT 已连接!\r\n");
+            uint8_t flags, rc;
+            if (RingBuf_Read(&flags) && RingBuf_Read(&rc)) {
+                if (rc == 0) {
+                    g_state = MQTT_STATE_CONNECTED;
+                    g_at_state = AT_IDLE;
+                    g_keepalive_tick = HAL_GetTick();
+                    Log("MQTT 已连接!\r\n");
+                } else {
+                    Log("MQTT 连接拒绝! RC=%d\r\n", rc);
+                    g_state = MQTT_STATE_ERROR;
+                    g_last_error = MQTT_ERR_MQTT_REFUSED;
+                }
+            } else {
+                g_state = MQTT_STATE_ERROR;
+            }
         } 
         else if (type == MQTT_PKT_SUBACK) {
             // SUBACK: 90 <Len> <ID MSB> <ID LSB> <RC>

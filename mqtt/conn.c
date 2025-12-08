@@ -8,7 +8,7 @@
  * ========================================== */
 #define AT_CMD_TIMEOUT_DEFAULT  1000
 #define AT_CMD_TIMEOUT_WIFI     20000   /* WiFi 连接可能较慢 */
-#define AT_CMD_TIMEOUT_TCP      5000
+#define AT_CMD_TIMEOUT_TCP      10000   /* 增加到 10s，防止 DNS 解析慢 */
 #define AT_RETRY_MAX            3
 
 /* MQTT 控制包类型 */
@@ -303,10 +303,12 @@ void MQTT_Run(void) {
                 if (CheckResponse("CONNECT") || CheckResponse("OK") || CheckResponse("ALREADY CONNECTED")) {
                     g_state = MQTT_STATE_MQTT_CONNECTING;
                     g_at_state = AT_IDLE;
-                } else if (CheckResponse("ERROR") || CheckResponse("CLOSED")) {
+                } else if (CheckResponse("ERROR") || CheckResponse("CLOSED") || CheckResponse("DNS Fail")) {
+                    Log("TCP 连接失败 (ERROR/CLOSED/DNS Fail)\r\n");
                     g_state = MQTT_STATE_ERROR;
                     g_last_error = MQTT_ERR_TCP_TIMEOUT;
                 } else if (now - g_at_start_tick > g_at_timeout) {
+                    Log("TCP 连接超时 (无响应)\r\n");
                     g_state = MQTT_STATE_ERROR;
                     g_last_error = MQTT_ERR_TCP_TIMEOUT;
                 }

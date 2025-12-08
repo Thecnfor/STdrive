@@ -13,6 +13,23 @@ static bool is_connected = false;
  * ========================================== */
 
 /**
+ * @brief 日志输出
+ */
+static void MQTT_Log(const char *fmt, ...)
+{
+#if MQTT_LOG_ENABLE
+    char log_buf[256];
+    va_list args;
+    
+    va_start(args, fmt);
+    vsnprintf(log_buf, sizeof(log_buf), fmt, args);
+    va_end(args);
+    
+    HAL_UART_Transmit(MQTT_LOG_UART_HANDLE, (uint8_t *)log_buf, strlen(log_buf), 100);
+#endif
+}
+
+/**
  * @brief 执行 AT 指令并等待期望的响应字符串
  * 
  * @param cmd 要发送的指令 (NULL 则不发送，仅接收)
@@ -36,6 +53,7 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
     
     /* 发送指令 */
     if (cmd != NULL) {
+        MQTT_Log("[CMD] %s", cmd);
         HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t *)cmd, strlen(cmd), 100);
     }
 
@@ -50,6 +68,7 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
                 
                 /* 实时检查是否包含期望响应 */
                 if (expected != NULL && strstr(p_buf, expected) != NULL) {
+                    MQTT_Log("[RESP] OK (%s)\r\n", expected);
                     return true;
                 }
             } else {
@@ -61,6 +80,7 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
         }
     }
 
+    MQTT_Log("[RESP] Timeout or Fail\r\n");
     return false;
 }
 
@@ -152,8 +172,13 @@ bool MQTT_Start(void)
 
     is_connected = false;
 
+    MQTT_Log("=== MQTT Start ===\r\n");
+
     /* 1. 基础 AT 检查 */
-    if (!ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) return false;
+    if (!ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) {
+        MQTT_Log("AT Check Failed\r\n");
+        return false;
+    }
     
     /* 2. WiFi 配置与连接 */
     ESP_SendAT("AT+CWMODE=1\r\n", "OK", AT_CMD_TIMEOUT_NORMAL);
@@ -164,22 +189,28 @@ bool MQTT_Start(void)
     if (ESP_Execute("AT+CWJAP?\r\n", "OK", buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_NORMAL)) {
         if (strstr(buf, WIFI_SSID)) {
             wifi_connected = true;
+            MQTT_Log("WiFi Already Connected\r\n");
         }
     }
 
     /* 未连接则尝试连接 */
     if (!wifi_connected) {
+        MQTT_Log("Connecting to WiFi: %s...\r\n", WIFI_SSID);
         sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
         if (!ESP_SendAT(cmd_buf, "OK", AT_CMD_TIMEOUT_WIFI)) {
             // 这里也可以检查 "WIFI CONNECTED" 或 "FAIL"
             // 简单起见，如果超时或无 OK 视为失败
             // 注意：部分固件返回 WIFI CONNECTED 后才返回 OK，或者只返回 WIFI CONNECTED
             // 严谨做法应检查 buf
+            MQTT_Log("WiFi Connect Failed\r\n");
+        } else {
+             MQTT_Log("WiFi Connected\r\n");
         }
     }
 
     /* 3. 建立 TCP 连接 */
     /* 检查是否已连接或建立新连接 */
+    MQTT_Log("Connecting to TCP: %s:%d...\r\n", MQTT_BROKER, MQTT_PORT);
     sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
     
     /* 发送指令并读取响应到 buf */
@@ -188,7 +219,9 @@ bool MQTT_Start(void)
     
     if (strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED")) {
         // TCP 连接成功
+        MQTT_Log("TCP Connected\r\n");
     } else {
+        MQTT_Log("TCP Connect Failed\r\n");
         return false;
     }
 
@@ -214,20 +247,27 @@ bool MQTT_Start(void)
     /* 发送报文 */
     if (MQTT_SendPacket(packet, idx)) {
         is_connected = true;
+        MQTT_Log("MQTT Connected\r\n");
         return true;
     }
-
+    
+    MQTT_Log("MQTT Connect Failed\r\n");
     return false;
 }
 
 bool MQTT_Publish(const char *topic, const char *message)
 {
-    if (!is_connected) return false;
+    if (!is_connected) {
+        MQTT_Log("Pub Fail: Not Connected\r\n");
+        return false;
+    }
 
     uint8_t packet[256]; // 确保够大
     uint16_t msg_len = strlen(message);
     uint16_t idx = 0;
     uint32_t remaining_len = (2 + strlen(topic)) + msg_len;
+
+    MQTT_Log("Pub: %s -> %s\r\n", topic, message);
 
     /* Fixed Header */
     packet[idx++] = MQTT_PKT_PUBLISH;
@@ -245,7 +285,12 @@ bool MQTT_Publish(const char *topic, const char *message)
 
 bool MQTT_Subscribe(const char *topic)
 {
-    if (!is_connected) return false;
+    if (!is_connected) {
+        MQTT_Log("Sub Fail: Not Connected\r\n");
+        return false;
+    }
+
+    MQTT_Log("Sub: %s\r\n", topic);
 
     uint8_t packet[128];
     uint16_t idx = 0;
@@ -360,6 +405,10 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
                         }
                         
                         msg_received = true;
+                        
+                        if (topic && payload) {
+                            MQTT_Log("Recv: %s -> %s\r\n", topic, payload);
+                        }
                     }
                     
                     /* 移除已处理的数据 */

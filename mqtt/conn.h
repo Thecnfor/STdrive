@@ -102,4 +102,9 @@ void MQTT_Heartbeat(void);
  */
 bool MQTT_Process(char *topic, uint16_t topic_len, char *payload, uint16_t payload_len);
 
+/**
+ * @brief 自动重连逻辑 (可在 while 或 RTOS 任务中定期调用)
+ */
+void MQTT_AutoReconnect(void);
+
 #endif /* __CONN_H */

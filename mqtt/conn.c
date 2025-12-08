@@ -68,7 +68,7 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
                 
                 /* 实时检查是否包含期望响应 */
                 if (expected != NULL && strstr(p_buf, expected) != NULL) {
-                    MQTT_Log("[RESP] OK (%s)\r\n", expected);
+                    MQTT_Log("[响应] 成功 (%s)\r\n", expected);
                     return true;
                 }
             } else {
@@ -82,6 +82,14 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
 
     MQTT_Log("[RESP] Timeout or Fail\r\n");
     return false;
+}
+
+void MQTT_AutoReconnect(void)
+{
+    if (!is_connected) {
+        MQTT_Log("检测到连接断开，尝试重连...\r\n");
+        MQTT_Start();
+    }
 }
 
 /**
@@ -148,9 +156,14 @@ static bool MQTT_SendPacket(uint8_t *packet, uint16_t len)
     char cmd_buf[32];
     sprintf(cmd_buf, "AT+CIPSEND=%d\r\n", len);
     
-    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_SHORT)) {
-        return ESP_SendRaw(packet, len);
+    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_NORMAL)) {
+        if (ESP_SendRaw(packet, len)) {
+            return true;
+        }
     }
+    
+    /* 发送失败视为连接断开 */
+    is_connected = false;
     return false;
 }
 
@@ -397,6 +410,7 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
                              memcpy(topic, &mqtt_data[var_header_start+2], copy_len);
                              topic[copy_len] = 0;
                         }
+                        
 
                         if (payload != NULL && payload_size > 0) {
                             uint16_t copy_len = (p_len < payload_size) ? p_len : (payload_size - 1);

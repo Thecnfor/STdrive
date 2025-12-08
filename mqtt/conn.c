@@ -281,13 +281,31 @@ bool MQTT_Publish(const char *topic, const char *message)
         MQTT_Log("发布失败: 未连接\r\n");
         return false;
     }
+    
+    if (topic == NULL || message == NULL) {
+        MQTT_Log("发布失败: 参数为空\r\n");
+        return false;
+    }
 
-    uint8_t packet[256]; // 确保够大
+    /* 1. 计算总长度并检查缓冲区 */
+    uint16_t topic_len = strlen(topic);
     uint16_t msg_len = strlen(message);
-    uint16_t idx = 0;
-    uint32_t remaining_len = (2 + strlen(topic)) + msg_len;
+    uint32_t remaining_len = (2 + topic_len) + msg_len;
+    
+    /* 估算最大包长: FixedHeader(1+4) + VarHeader + Payload */
+    /* 为安全起见，使用较大的静态缓冲区或栈缓冲区 */
+    #define MQTT_TX_BUF_SIZE 1024
+    static uint8_t packet[MQTT_TX_BUF_SIZE]; 
+    
+    /* 简单预判：头部最多5字节 + 剩余长度 */
+    if (remaining_len + 5 > MQTT_TX_BUF_SIZE) {
+        MQTT_Log("发布失败: 数据过长 (Topic+Msg > %d)\r\n", MQTT_TX_BUF_SIZE - 5);
+        return false;
+    }
 
     MQTT_Log("发布: %s -> %s\r\n", topic, message);
+
+    uint16_t idx = 0;
 
     /* Fixed Header */
     packet[idx++] = MQTT_PKT_PUBLISH;

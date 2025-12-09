@@ -7,11 +7,14 @@
 
 /* ==========================================
  * 用户配置区域
+ * 必选：配置 MQTT_UART_HANDLE 为 ESP8266 AT 指令串口（如 &huart1 或 &huart2）
+ * 可选：配置 MQTT_LOG_UART_HANDLE 作为日志输出串口；注释该宏即可禁用日志以节约带宽
+ * 可选：若希望全自动后台服务，建议在工程中定义 `MQTT_TIM_HANDLE` 指向一个定时器句柄
+ * 建议：日志串口与 AT 串口分离，避免输出与指令相互干扰
  * ========================================== */
-#define MQTT_UART_HANDLE &huart1  /* 使用的串口句柄，例如 &huart1 或 &huart2 */
-
-/* 日志配置 */
-#define MQTT_LOG_UART_HANDLE    &huart2 /* 日志输出串口句柄 - 注释掉此行以禁用日志 */
+#define MQTT_UART_HANDLE        &huart1   /* 使用的串口句柄，例如 &huart1 或 &huart2 */
+#define MQTT_LOG_UART_HANDLE    &huart2   /* 日志配置（注释本宏可关闭日志） */
+#define MQTT_TIM_HANDLE         &htim3    /* 后台服务定时器（注释本宏可禁用定时驱动） */
 
 #define WIFI_SSID       ""
 #define WIFI_PASSWORD   ""
@@ -101,10 +104,7 @@ void MQTT_Heartbeat(void);
  */
 bool MQTT_Process(char *topic, uint16_t topic_len, char *payload, uint16_t payload_len);
 
-/**
- * @brief 自动重连逻辑 (可在 while 或 RTOS 任务中定期调用)
- */
-void MQTT_AutoReconnect(void);
+ 
 
 /**
  * @brief 快速测试 MQTT 完整功能 (连接 -> 订阅 -> 循环发布/接收)

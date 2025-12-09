@@ -91,13 +91,62 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
 }
 
 /**
- * @brief 自动重连逻辑 (可在 while 或 RTOS 任务中定期调用)
+ * 内部分阶段自动重连例程说明
+ * 1. 先检查 WiFi 状态（AT+CWJAP?），未连接则仅执行入网
+ * 2. 检查 TCP（AT+CIPSTART），已连接则跳过，仅在断开时重建
+ * 3. 发送 MQTT CONNECT；成功后置位 is_connected
+ * 4. 全流程不重复已就绪阶段，提升重连效率
+ * 该函数仅由后台服务或自动重连入口调用，用户无需手动触发
  */
+static bool MQTT_ReconnectStep(void)
+{
+    char buf[RX_BUFFER_SIZE];
+    char cmd_buf[128];
+    uint8_t packet[128];
+    uint16_t idx = 0;
+
+    bool wifi_connected = false;
+    if (ESP_Execute("AT+CWJAP?\r\n", "OK", buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_NORMAL)) {
+        if (strstr(buf, WIFI_SSID)) {
+            wifi_connected = true;
+        }
+    }
+    if (!wifi_connected) {
+        sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+        if (!ESP_SendAT(cmd_buf, "OK", AT_CMD_TIMEOUT_WIFI)) {
+            return false;
+        }
+    }
+
+    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
+    ESP_Execute(cmd_buf, NULL, buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
+    if (!(strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED"))) {
+        return false;
+    }
+
+    uint32_t remaining_len = (2 + 4) + 1 + 1 + 2 + (2 + strlen(MQTT_CLIENT_ID));
+    idx = 0;
+    packet[idx++] = MQTT_PKT_CONNECT;
+    idx += mqtt_encode_len(&packet[idx], remaining_len);
+    idx += mqtt_encode_string(&packet[idx], MQTT_PROTOCOL_NAME);
+    packet[idx++] = MQTT_PROTOCOL_LEVEL;
+    packet[idx++] = MQTT_FLAG_CLEAN_SESSION;
+    packet[idx++] = (MQTT_KEEPALIVE >> 8) & 0xFF;
+    packet[idx++] = MQTT_KEEPALIVE & 0xFF;
+    idx += mqtt_encode_string(&packet[idx], MQTT_CLIENT_ID);
+
+    if (MQTT_SendPacket(packet, idx)) {
+        is_connected = true;
+        return true;
+    }
+    return false;
+}
+
 void MQTT_AutoReconnect(void)
 {
     if (!is_connected) {
         MQTT_Log("检测到连接断开，尝试重连...\r\n");
-        MQTT_Start();
+        MQTT_ReconnectStep();
     }
 }
 
@@ -270,6 +319,13 @@ bool MQTT_Start(void)
     if (MQTT_SendPacket(packet, idx)) {
         is_connected = true;
         MQTT_Log("MQTT 已连接\r\n");
+        /* 启动后台服务驱动
+         * 若定义 `MQTT_TIM_HANDLE` 为某定时器句柄，则使用定时中断周期性调用服务例程
+         * 未定义亦可工作：服务例程在关键路径按需触发，无需用户额外轮询
+         */
+        #ifdef MQTT_TIM_HANDLE
+        HAL_TIM_Base_Start_IT(MQTT_TIM_HANDLE);
+        #endif
         return true;
     }
     
@@ -281,6 +337,7 @@ bool MQTT_Publish(const char *topic, const char *message)
 {
     if (!is_connected) {
         MQTT_Log("发布失败: 未连接\r\n");
+        MQTT_ServiceTick();
         return false;
     }
     
@@ -327,6 +384,7 @@ bool MQTT_Subscribe(const char *topic)
 {
     if (!is_connected) {
         MQTT_Log("订阅失败: 未连接\r\n");
+        MQTT_ServiceTick();
         return false;
     }
 
@@ -359,6 +417,32 @@ void MQTT_Heartbeat(void)
     MQTT_SendPacket(packet, 2);
 }
 
+static void MQTT_ServiceTick(void)
+{
+    static uint32_t last_ping = 0;
+    if (is_connected) {
+        if (HAL_GetTick() - last_ping > (MQTT_KEEPALIVE * 1000) / 2) {
+            last_ping = HAL_GetTick();
+            MQTT_Heartbeat();
+        }
+    } else {
+        MQTT_AutoReconnect();
+    }
+}
+
+/* 定时器中断回调挂钩
+ * 仅当中断来源为 `MQTT_TIM_HANDLE` 时驱动后台服务
+ * 请确保该定时器按所需周期启动（在 `MQTT_Start` 中已启动）
+ */
+#ifdef MQTT_TIM_HANDLE
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim == MQTT_TIM_HANDLE) {
+        MQTT_ServiceTick();
+    }
+}
+#endif
+
 /* ==========================================
  * 测试函数
  * ========================================== */
@@ -370,55 +454,31 @@ void MQTT_Heartbeat(void)
 void MQTT_Test_Run(void)
 {
     static uint32_t last_pub_time = 0;
+    static bool started = false;
     static bool is_subscribed = false;
-    
-    /* 1. 确保连接 */
-    if (!MQTT_IsConnected()) {
-        MQTT_Log(">> [测试] 正在连接 MQTT...\r\n");
-        if (MQTT_Start()) {
-            MQTT_Log(">> [测试] MQTT 连接成功\r\n");
-            is_subscribed = false; /* 重连后需要重新订阅 */
-        } else {
-            MQTT_Log(">> [测试] MQTT 连接失败，等待重试...\r\n");
-            HAL_Delay(2000); /* 失败后稍微延时，避免刷屏 */
-            return;
-        }
+
+    if (!started) {
+        MQTT_Start();
+        started = true;
     }
 
-    /* 2. 确保订阅 (连接成功后执行一次) */
-    if (!is_subscribed) {
-        HAL_Delay(500); /* 等待服务器就绪 */
+    if (!is_subscribed && MQTT_IsConnected()) {
+        HAL_Delay(500);
         if (MQTT_Subscribe("test/cmd")) {
-            MQTT_Log(">> [测试] 订阅主题 'test/cmd' 成功\r\n");
             is_subscribed = true;
-        } else {
-            MQTT_Log(">> [测试] 订阅失败，稍后重试\r\n");
         }
     }
 
-    /* 3. 定时发布心跳/状态 (每 5 秒) */
-    if (HAL_GetTick() - last_pub_time > 5000) {
+    if (MQTT_IsConnected() && (HAL_GetTick() - last_pub_time > 5000)) {
         last_pub_time = HAL_GetTick();
-        
         char msg[64];
-        /* 使用 HAL_GetTick 作为变化数据，方便观察 */
         snprintf(msg, sizeof(msg), "online_tick_%lu", HAL_GetTick());
-        
-        if (MQTT_Publish("test/status", msg)) {
-             MQTT_Log(">> [测试] 发布 'test/status': %s 成功\r\n", msg);
-        } else {
-             MQTT_Log(">> [测试] 发布失败\r\n");
-             /* 发布失败通常意味着连接断开，下次循环会尝试重连 */
-        }
+        MQTT_Publish("test/status", msg);
     }
 
-    /* 4. 处理接收到的消息 */
     char topic[64];
     char payload[128];
     if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
-        MQTT_Log(">> [测试] 收到消息: Topic=[%s] Payload=[%s]\r\n", topic, payload);
-        
-        /* 简单的交互：收到什么就回复什么 */
         char reply[128];
         snprintf(reply, sizeof(reply), "Echo: %s", payload);
         MQTT_Publish("test/reply", reply);

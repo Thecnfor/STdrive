@@ -272,11 +272,6 @@ bool MQTT_Start(void)
         HAL_Delay(500);
     }
 
-    if (!at_ok) {
-        MQTT_Log("AT 检查失败，请检查接线或复位模块\r\n");
-        return false;
-    }
-    
     /* 2. WiFi 配置与连接 */
     ESP_SendAT("AT+CWMODE=1\r\n", "OK", AT_CMD_TIMEOUT_NORMAL);
 
@@ -312,7 +307,7 @@ bool MQTT_Start(void)
     
     /* 发送指令并读取响应到 buf */
     /* 期望 CONNECT，但也可能已经是 ALREADY CONNECTED */
-    ESP_Execute(cmd_buf, "CONNECT", buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
+    ESP_Execute(cmd_buf, NULL, buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
     
     if (strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED")) {
         // TCP 连接成功

@@ -261,8 +261,19 @@ bool MQTT_Start(void)
     MQTT_Log("=== MQTT 启动 ===\r\n");
 
     /* 1. 基础 AT 检查 */
-    if (!ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) {
-        MQTT_Log("AT 检查失败\r\n");
+    /* 增加重试机制，防止模块未准备好 */
+    bool at_ok = false;
+    for (int i = 0; i < 5; i++) {
+        if (ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) {
+            at_ok = true;
+            break;
+        }
+        MQTT_Log("AT 检查重试 %d/5...\r\n", i + 1);
+        HAL_Delay(500);
+    }
+
+    if (!at_ok) {
+        MQTT_Log("AT 检查失败，请检查接线或复位模块\r\n");
         return false;
     }
     

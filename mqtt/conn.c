@@ -12,6 +12,7 @@ static MQTT_MessageHandler message_handler = NULL;
 /* ==========================================
  * 辅助函数
  * ========================================== */
+static bool MQTT_ReconnectStep(void);
 
 /**
  * @brief 日志输出

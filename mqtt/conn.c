@@ -301,7 +301,7 @@ bool MQTT_Start(void)
     
     /* 发送指令并读取响应到 buf */
     /* 期望 CONNECT，但也可能已经是 ALREADY CONNECTED */
-    ESP_Execute(cmd_buf, NULL, buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
+    ESP_Execute(cmd_buf, "CONNECT", buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
     
     if (strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED")) {
         // TCP 连接成功

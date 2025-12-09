@@ -23,6 +23,8 @@ static uint8_t subscription_count = 0;
  * 辅助函数
  * ========================================== */
 
+static bool MQTT_SendSubscribePacket(const char *topic);
+
 /**
  * @brief 日志输出
  */
@@ -31,11 +33,11 @@ static void MQTT_Log(const char *fmt, ...)
 {
     char log_buf[256];
     va_list args;
-    
+
     va_start(args, fmt);
     vsnprintf(log_buf, sizeof(log_buf), fmt, args);
     va_end(args);
-    
+
     HAL_UART_Transmit(MQTT_LOG_UART_HANDLE, (uint8_t *)log_buf, strlen(log_buf), 100);
 }
 #else
@@ -44,7 +46,7 @@ static void MQTT_Log(const char *fmt, ...)
 
 /**
  * @brief 执行 AT 指令并等待期望的响应字符串
- * 
+ *
  * @param cmd 要发送的指令 (NULL 则不发送，仅接收)
  * @param expected 期望收到的响应子串 (NULL 则不检查，读到超时)
  * @param out_buf 输出缓冲区，用于存储收到的数据 (NULL 则使用内部临时缓冲)
@@ -63,7 +65,7 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
 
     /* 清空接收缓冲区 */
     memset(p_buf, 0, p_len);
-    
+
     /* 发送指令 */
     if (cmd != NULL) {
         MQTT_Log("[CMD] %s", cmd);
@@ -78,16 +80,16 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
             if (idx < p_len - 1) {
                 p_buf[idx++] = rx_char;
                 p_buf[idx] = '\0';
-                
+
                 /* 实时检查是否包含期望响应 */
                 if (expected != NULL && strstr(p_buf, expected) != NULL) {
                     MQTT_Log("[响应] 成功 (%s)\r\n", expected);
                     return true;
                 }
             } else {
-                /* 缓冲区满，重置索引 (循环覆盖，防止溢出) 
+                /* 缓冲区满，重置索引 (循环覆盖，防止溢出)
                    注意：这可能会截断长响应，实际应用根据需要调整 */
-                idx = 0; 
+                idx = 0;
                 // 或者 break; 取决于策略
             }
         }
@@ -139,13 +141,13 @@ static bool MQTT_SendPacket(uint8_t *packet, uint16_t len)
 {
     char cmd_buf[32];
     sprintf(cmd_buf, "AT+CIPSEND=%d\r\n", len);
-    
+
     if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_LONG)) {
         if (ESP_SendRaw(packet, len)) {
             return true;
         }
     }
-    
+
     is_connected = false;
     return false;
 }
@@ -184,7 +186,7 @@ void MQTT_Service(void)
                 if (MQTT_SendSubscribePacket(subscriptions[i].topic)) {
                     subscriptions[i].is_subscribed = true;
                     // 给模块一点处理时间
-                    HAL_Delay(50); 
+                    HAL_Delay(50);
                 }
             }
         }
@@ -233,6 +235,11 @@ bool MQTT_Start(void)
         HAL_Delay(500);
     }
 
+    if (!at_ok) {
+        MQTT_Log("AT 检查失败，模块无响应\r\n");
+        return false;
+    }
+
     /* 2. WiFi 配置与连接 */
     ESP_SendAT("AT+CWMODE=1\r\n", "OK", AT_CMD_TIMEOUT_NORMAL);
 
@@ -265,11 +272,11 @@ bool MQTT_Start(void)
     /* 检查是否已连接或建立新连接 */
     MQTT_Log("正在连接 TCP: %s:%d...\r\n", MQTT_BROKER, MQTT_PORT);
     sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
-    
+
     /* 发送指令并读取响应到 buf */
     /* 期望 CONNECT，但也可能已经是 ALREADY CONNECTED */
     ESP_Execute(cmd_buf, NULL, buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
-    
+
     if (strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED")) {
         // TCP 连接成功
         MQTT_Log("TCP 已连接\r\n");
@@ -300,7 +307,7 @@ bool MQTT_Start(void)
     /* 发送报文 */
     if (MQTT_SendPacket(packet, idx)) {
         is_connected = true;
-        
+
         /* 重置订阅状态，以便在 Service 中重新订阅 */
         for (int i = 0; i < subscription_count; i++) {
             subscriptions[i].is_subscribed = false;
@@ -316,7 +323,7 @@ bool MQTT_Start(void)
         #endif
         return true;
     }
-    
+
     MQTT_Log("MQTT 连接失败\r\n");
     return false;
 }
@@ -328,7 +335,7 @@ bool MQTT_Publish(const char *topic, const char *message)
         MQTT_Service();
         return false;
     }
-    
+
     if (topic == NULL || message == NULL) {
         MQTT_Log("发布失败: 参数为空\r\n");
         return false;
@@ -338,12 +345,12 @@ bool MQTT_Publish(const char *topic, const char *message)
     uint16_t topic_len = strlen(topic);
     uint16_t msg_len = strlen(message);
     uint32_t remaining_len = (2 + topic_len) + msg_len;
-    
+
     /* 估算最大包长: FixedHeader(1+4) + VarHeader + Payload */
     /* 为安全起见，使用较大的静态缓冲区或栈缓冲区 */
     #define MQTT_TX_BUF_SIZE 1024
-    static uint8_t packet[MQTT_TX_BUF_SIZE]; 
-    
+    static uint8_t packet[MQTT_TX_BUF_SIZE];
+
     /* 简单预判：头部最多5字节 + 剩余长度 */
     if (remaining_len + 5 > MQTT_TX_BUF_SIZE) {
         MQTT_Log("发布失败: 数据过长 (Topic+Msg > %d)\r\n", MQTT_TX_BUF_SIZE - 5);
@@ -384,7 +391,7 @@ static bool MQTT_SendSubscribePacket(const char *topic)
 
     /* Variable Header: Packet ID */
     packet[idx++] = 0x00;
-    packet[idx++] = 0x01; 
+    packet[idx++] = 0x01;
 
     /* Payload: Topic Filter + QoS */
     idx += mqtt_encode_string(&packet[idx], topic);
@@ -544,7 +551,7 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
     }
 
     if (rx_idx == 0) return false;
-    
+
     /* 简单的解析逻辑：寻找 +IPD, */
     char *ipd_ptr = strstr((char*)rx_buffer, "+IPD,");
     if (ipd_ptr) {
@@ -556,13 +563,13 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
             if (sscanf(ipd_ptr, "+IPD,%d:", &len) == 1) {
                 int header_len = (colon_ptr - ipd_ptr) + 1; // "+IPD,len:" 的长度
                 int total_len = header_len + len;
-                
+
                 /* 检查是否接收完整 */
                 int ipd_offset = ipd_ptr - (char*)rx_buffer;
                 if (rx_idx >= ipd_offset + total_len) {
                     /* 获取 MQTT 数据起始地址 */
                     uint8_t *mqtt_data = (uint8_t*)(colon_ptr + 1);
-                    
+
                     /* 解析 MQTT PUBLISH 报文 */
                     /* Fixed Header: Byte 0 (0x30 - 0x3F) */
                     if ((mqtt_data[0] & 0xF0) == 0x30) {
@@ -571,47 +578,47 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
                         uint32_t rem_len = 0;
                         uint32_t multiplier = 1;
                         int i = 1;
-                        
+
                         /* 解析剩余长度 */
                         do {
                             rem_len += (mqtt_data[i] & 127) * multiplier;
                             multiplier *= 128;
                             i++;
                         } while ((mqtt_data[i-1] & 128) != 0 && i < 5);
-                        
+
                         int var_header_start = i;
                         /* Topic Length */
                         uint16_t t_len = (mqtt_data[var_header_start] << 8) | mqtt_data[var_header_start+1];
-                        
+
                         /* Payload Start */
                         int payload_start = var_header_start + 2 + t_len;
                         if (qos > 0) {
                             payload_start += 2; /* Packet ID */
                         }
-                        
+
                         int p_len = rem_len - (payload_start - var_header_start);
-                        
+
                         /* 复制到用户缓冲区 */
                         if (topic != NULL && topic_size > 0) {
                              uint16_t copy_len = (t_len < topic_size) ? t_len : (topic_size - 1);
                              memcpy(topic, &mqtt_data[var_header_start+2], copy_len);
                              topic[copy_len] = 0;
                         }
-                        
+
 
                         if (payload != NULL && payload_size > 0) {
                             uint16_t copy_len = (p_len < payload_size) ? p_len : (payload_size - 1);
                             memcpy(payload, &mqtt_data[payload_start], copy_len);
                             payload[copy_len] = 0;
                         }
-                        
+
                         msg_received = true;
-                        
+
                         if (topic && payload) {
                             MQTT_Log("接收: %s -> %s\r\n", topic, payload);
                         }
                     }
-                    
+
                     /* 移除已处理的数据 */
                     int bytes_processed = ipd_offset + total_len;
                     memmove(rx_buffer, rx_buffer + bytes_processed, rx_idx - bytes_processed);
@@ -622,10 +629,10 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload, uint16_t payl
             }
         }
     }
-    
+
     /* 防止缓冲区溢出且未找到有效数据的情况 */
     if (rx_idx == RX_BUFFER_SIZE && !strstr((char*)rx_buffer, "+IPD,")) {
-         rx_idx = 0; 
+         rx_idx = 0;
     }
     return false;
 }

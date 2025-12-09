@@ -14,7 +14,7 @@
  * ========================================== */
 #define MQTT_UART_HANDLE        &huart1   /* 使用的串口句柄，例如 &huart1 或 &huart2 */
 #define MQTT_LOG_UART_HANDLE    &huart2   /* 日志配置（注释本宏可关闭日志） */
-#define MQTT_TIM_HANDLE         &htim3    /* 后台服务定时器（注释本宏可禁用定时驱动） */
+//#define MQTT_TIM_HANDLE         &htim3    /* 后台服务定时器（注释本宏可禁用定时驱动） */
 
 #define WIFI_SSID       ""
 #define WIFI_PASSWORD   ""
@@ -56,17 +56,55 @@
  * ========================================== */
 
 /**
- * @brief 一键启动 MQTT (初始化 + 连接)
- * @details 初始化 ESP8266 并连接到 MQTT 服务器
- * @return true 启动成功
- * @return false 启动失败
+ * @brief 一键启动 MQTT (初始化 + 入网 + TCP + CONNECT)
+ * @details 初始化 ESP8266、配置 WiFi 并建立到服务器的 TCP 连接，随后发送 MQTT CONNECT 完成会话建立。
+ * 使用方法：
+ * 1) 非 RTOS：在 main 初始化后调用一次 `MQTT_Start()`，随后在 while 循环中周期性调用 `MQTT_Service()`；
+ * 2) RTOS：直接创建任务入口 `MQTT_Task()`，任务内部会自动调用 `MQTT_Start()` 并循环服务；
+ * 3) 也可以在工程中定义 `MQTT_TIM_HANDLE`，由定时器中断驱动服务例程，无需手动轮询。
+ * 示例（非 RTOS）：
+ *   // 初始化硬件...
+ *   MQTT_Start();
+ *   while (1) {
+ *       MQTT_Service();
+ *       if (MQTT_IsConnected()) {
+ *           MQTT_Publish("test/status", "ok");
+ *       }
+ *       HAL_Delay(50);
+ *   }
+ * 示例（RTOS）：
+ *   // xTaskCreate(MQTT_Task, "mqtt", stack, NULL, prio, NULL);
+ * @return true 启动成功并进入已连接状态
+ * @return false 任一阶段失败（AT、WiFi、TCP、MQTT）
  */
 bool MQTT_Start(void);
 
 /**
+ * @brief MQTT 服务例程（非阻塞）
+ * @details 放入 while 循环或定时器/任务中周期性调用（建议 50~200ms）。
+ * 自动执行心跳与分阶段重连：仅补齐未就绪阶段（WiFi/TCP/MQTT CONNECT），避免每次全重连。
+ */
+void MQTT_Service(void);
+
+/**
+ * @brief MQTT RTOS 任务入口
+ * @details 在任务中自动调用 `MQTT_Start()` 并周期性执行服务例程。
+ * 示例：xTaskCreate(MQTT_Task, "mqtt", stack, NULL, prio, NULL);
+ */
+void MQTT_Task(void *argument);
+
+/**
  * @brief 检查 MQTT 是否已连接
+ * @return true 已建立 MQTT 会话
+ * @return false 未连接或发送失败导致断开
  */
 bool MQTT_IsConnected(void);
+
+/**
+ * @brief 发送心跳包 (PINGREQ)
+ * @details 通常由服务例程在半个 keepalive 周期触发；也可手动调用以维持会话活性
+ */
+void MQTT_Heartbeat(void);
 
 /**
  * @brief 发布消息
@@ -88,11 +126,6 @@ bool MQTT_Publish(const char *topic, const char *message);
 bool MQTT_Subscribe(const char *topic);
 
 /**
- * @brief 发送心跳包
- */
-void MQTT_Heartbeat(void);
-
-/**
  * @brief 处理 MQTT 接收数据 (需要在主循环中调用)
  * 
  * @param topic [out] 输出主题缓冲区
@@ -103,8 +136,6 @@ void MQTT_Heartbeat(void);
  * @return false 无新消息
  */
 bool MQTT_Process(char *topic, uint16_t topic_len, char *payload, uint16_t payload_len);
-
- 
 
 /**
  * @brief 快速测试 MQTT 完整功能 (连接 -> 订阅 -> 循环发布/接收)

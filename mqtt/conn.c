@@ -230,32 +230,6 @@ static bool MQTT_ReconnectStep(void)
     return false;
 }
 
-/**
- * @brief 简化版发送 AT 指令
- */
-
-/* ==========================================
- * MQTT 协议层
- * ========================================== */
-
-/**
- * @brief 编码剩余长度
- * @param buf 输出缓冲区
- * @param length 剩余长度值
- * @return 写入的字节数
- */
-
-/**
- * @brief 编码 MQTT 字符串 (2字节长度 + 字符串内容)
- * @param buf 输出缓冲区
- * @param str 字符串
- * @return 写入的字节数
- */
-
-/**
- * @brief 发送 MQTT 报文 (自动处理 AT+CIPSEND)
- */
-
 /* ==========================================
  * 公共接口函数实现
  * ========================================== */
@@ -440,6 +414,23 @@ bool MQTT_Subscribe(const char *topic)
     packet[idx++] = 0x00; /* QoS 0 */
 
     return MQTT_SendPacket(packet, idx);
+}
+
+void MQTT_Service(void)
+{
+    MQTT_ServiceTick();
+}
+
+void MQTT_Task(void *argument)
+{
+    static bool started = false;
+    while (1) {
+        if (!started) {
+            started = MQTT_Start();
+        }
+        MQTT_ServiceTick();
+        HAL_Delay(50);
+    }
 }
 
 

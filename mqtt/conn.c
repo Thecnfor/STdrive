@@ -12,7 +12,6 @@ static MQTT_MessageHandler message_handler = NULL;
 /* ==========================================
  * 辅助函数
  * ========================================== */
-static bool MQTT_ReconnectStep(void);
 
 /**
  * @brief 日志输出
@@ -161,9 +160,14 @@ void MQTT_Heartbeat(void)
 
 void MQTT_AutoReconnect(void)
 {
+    static uint32_t last_reconnect = 0;
+
     if (!is_connected) {
-        MQTT_Log("检测到连接断开，尝试重连...\r\n");
-        MQTT_ReconnectStep();
+        if (HAL_GetTick() - last_reconnect > 5000) {
+            last_reconnect = HAL_GetTick();
+            MQTT_Log("检测到连接断开，尝试重连...\r\n");
+            MQTT_Start();
+        }
     }
 }
 
@@ -186,58 +190,6 @@ void MQTT_Service(void)
             message_handler(topic, payload);
         }
     }
-}
-
-/**
- * 内部分阶段自动重连例程说明
- * 1. 先检查 WiFi 状态（AT+CWJAP?），未连接则仅执行入网
- * 2. 检查 TCP（AT+CIPSTART），已连接则跳过，仅在断开时重建
- * 3. 发送 MQTT CONNECT；成功后置位 is_connected
- * 4. 全流程不重复已就绪阶段，提升重连效率
- * 该函数仅由后台服务或自动重连入口调用，用户无需手动触发
- */
-static bool MQTT_ReconnectStep(void)
-{
-    char buf[RX_BUFFER_SIZE];
-    char cmd_buf[128];
-    uint8_t packet[128];
-    uint16_t idx = 0;
-
-    bool wifi_connected = false;
-    if (ESP_Execute("AT+CWJAP?\r\n", "OK", buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_NORMAL)) {
-        if (strstr(buf, WIFI_SSID)) {
-            wifi_connected = true;
-        }
-    }
-    if (!wifi_connected) {
-        sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
-        if (!ESP_SendAT(cmd_buf, "OK", AT_CMD_TIMEOUT_WIFI)) {
-            return false;
-        }
-    }
-
-    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", MQTT_BROKER, MQTT_PORT);
-    ESP_Execute(cmd_buf, NULL, buf, RX_BUFFER_SIZE, AT_CMD_TIMEOUT_LONG);
-    if (!(strstr(buf, "CONNECT") || strstr(buf, "ALREADY CONNECTED"))) {
-        return false;
-    }
-
-    uint32_t remaining_len = (2 + 4) + 1 + 1 + 2 + (2 + strlen(MQTT_CLIENT_ID));
-    idx = 0;
-    packet[idx++] = MQTT_PKT_CONNECT;
-    idx += mqtt_encode_len(&packet[idx], remaining_len);
-    idx += mqtt_encode_string(&packet[idx], MQTT_PROTOCOL_NAME);
-    packet[idx++] = MQTT_PROTOCOL_LEVEL;
-    packet[idx++] = MQTT_FLAG_CLEAN_SESSION;
-    packet[idx++] = (MQTT_KEEPALIVE >> 8) & 0xFF;
-    packet[idx++] = MQTT_KEEPALIVE & 0xFF;
-    idx += mqtt_encode_string(&packet[idx], MQTT_CLIENT_ID);
-
-    if (MQTT_SendPacket(packet, idx)) {
-        is_connected = true;
-        return true;
-    }
-    return false;
 }
 
 /* ==========================================

@@ -482,7 +482,7 @@ void MQTT_Test_Run(void)
     char payload[128];
     if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
         char reply[128];
-        snprintf(reply, sizeof(reply), "Echo: %s", payload);
+        snprintf(reply, sizeof(reply), "Echo: %.110s", payload);
         MQTT_Publish("test/reply", reply);
     }
 }

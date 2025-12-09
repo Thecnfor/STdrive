@@ -43,6 +43,8 @@
 #define MQTT_PKT_PUBACK         0x40    /* 发布确认 */
 #define MQTT_PKT_SUBSCRIBE      0x82    /* 订阅请求 (QoS 1) */
 #define MQTT_PKT_SUBACK         0x90    /* 订阅确认 */
+#define MQTT_PKT_UNSUBSCRIBE    0xA2    /* 取消订阅请求 */
+#define MQTT_PKT_UNSUBACK       0xB0    /* 取消订阅确认 */
 #define MQTT_PKT_PINGREQ        0xC0    /* 心跳请求 */
 #define MQTT_PKT_PINGRESP       0xD0    /* 心跳响应 */
 #define MQTT_PKT_DISCONNECT     0xE0    /* 断开连接 */
@@ -120,6 +122,15 @@ bool MQTT_Publish(const char *topic, const char *message);
  * @return false 发送失败
  */
 bool MQTT_Subscribe(const char *topic);
+
+/**
+ * @brief 取消订阅主题
+ * 
+ * @param topic 主题
+ * @return true 取消订阅请求发送成功
+ * @return false 发送失败
+ */
+bool MQTT_Unsubscribe(const char *topic);
 
 /* ***************************无需调用******************************* */
 

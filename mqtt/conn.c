@@ -9,6 +9,16 @@
 static bool is_connected = false;
 static MQTT_MessageHandler message_handler = NULL;
 
+/* 订阅管理 */
+#define MAX_SUBSCRIPTIONS 10
+typedef struct {
+    char topic[64];
+    bool is_subscribed;
+} MQTT_Subscription_t;
+
+static MQTT_Subscription_t subscriptions[MAX_SUBSCRIPTIONS];
+static uint8_t subscription_count = 0;
+
 /* ==========================================
  * 辅助函数
  * ========================================== */
@@ -167,6 +177,17 @@ void MQTT_Service(void)
             last_ping = HAL_GetTick();
             MQTT_Heartbeat();
         }
+
+        /* 检查并执行挂起的订阅 */
+        for (int i = 0; i < subscription_count; i++) {
+            if (!subscriptions[i].is_subscribed) {
+                if (MQTT_SendSubscribePacket(subscriptions[i].topic)) {
+                    subscriptions[i].is_subscribed = true;
+                    // 给模块一点处理时间
+                    HAL_Delay(50); 
+                }
+            }
+        }
     } else {
         MQTT_AutoReconnect();
     }
@@ -279,6 +300,12 @@ bool MQTT_Start(void)
     /* 发送报文 */
     if (MQTT_SendPacket(packet, idx)) {
         is_connected = true;
+        
+        /* 重置订阅状态，以便在 Service 中重新订阅 */
+        for (int i = 0; i < subscription_count; i++) {
+            subscriptions[i].is_subscribed = false;
+        }
+
         MQTT_Log("MQTT 已连接\r\n");
         /* 启动后台服务驱动
          * 若定义 `MQTT_TIM_HANDLE` 为某定时器句柄，则使用定时中断周期性调用服务例程
@@ -341,15 +368,9 @@ bool MQTT_Publish(const char *topic, const char *message)
     return MQTT_SendPacket(packet, idx);
 }
 
-bool MQTT_Subscribe(const char *topic)
+static bool MQTT_SendSubscribePacket(const char *topic)
 {
-    if (!is_connected) {
-        MQTT_Log("订阅失败: 未连接\r\n");
-        MQTT_Service();
-        return false;
-    }
-
-    MQTT_Log("订阅: %s\r\n", topic);
+    MQTT_Log("发送订阅请求: %s\r\n", topic);
 
     uint8_t packet[128];
     uint16_t idx = 0;
@@ -368,6 +389,71 @@ bool MQTT_Subscribe(const char *topic)
     /* Payload: Topic Filter + QoS */
     idx += mqtt_encode_string(&packet[idx], topic);
     packet[idx++] = 0x00; /* QoS 0 */
+
+    return MQTT_SendPacket(packet, idx);
+}
+
+bool MQTT_Subscribe(const char *topic)
+{
+    /* 检查是否已存在 */
+    for (int i = 0; i < subscription_count; i++) {
+        if (strncmp(subscriptions[i].topic, topic, sizeof(subscriptions[i].topic)) == 0) {
+            // MQTT_Log("订阅已注册: %s\r\n", topic);
+            return true;
+        }
+    }
+
+    /* 添加新订阅 */
+    if (subscription_count < MAX_SUBSCRIPTIONS) {
+        strncpy(subscriptions[subscription_count].topic, topic, sizeof(subscriptions[subscription_count].topic) - 1);
+        subscriptions[subscription_count].topic[sizeof(subscriptions[subscription_count].topic) - 1] = '\0';
+        subscriptions[subscription_count].is_subscribed = false;
+        subscription_count++;
+        MQTT_Log("订阅注册成功: %s\r\n", topic);
+        return true;
+    }
+
+    MQTT_Log("订阅注册失败: 列表已满\r\n");
+    return false;
+}
+
+bool MQTT_Unsubscribe(const char *topic)
+{
+    /* 1. 从管理列表中移除 */
+    for (int i = 0; i < subscription_count; i++) {
+        if (strncmp(subscriptions[i].topic, topic, sizeof(subscriptions[i].topic)) == 0) {
+            /* 移动后续元素填补空缺 */
+            for (int j = i; j < subscription_count - 1; j++) {
+                subscriptions[j] = subscriptions[j + 1];
+            }
+            subscription_count--;
+            break; /* 找到并移除后退出循环 */
+        }
+    }
+
+    /* 2. 发送取消订阅报文（无论是否在列表中，都尝试发送以确保服务器同步） */
+    if (!is_connected) {
+        return true; /* 未连接时仅移除列表即可 */
+    }
+
+    MQTT_Log("取消订阅: %s\r\n", topic);
+
+    uint8_t packet[128];
+    uint16_t idx = 0;
+    /* Variable Header: Packet ID(2) */
+    /* Payload: Topic Filter(string) */
+    uint32_t remaining_len = 2 + (2 + strlen(topic));
+
+    /* Fixed Header */
+    packet[idx++] = MQTT_PKT_UNSUBSCRIBE;
+    idx += mqtt_encode_len(&packet[idx], remaining_len);
+
+    /* Variable Header: Packet ID */
+    packet[idx++] = 0x00;
+    packet[idx++] = 0x02; /* Packet ID 2 */
+
+    /* Payload: Topic Filter */
+    idx += mqtt_encode_string(&packet[idx], topic);
 
     return MQTT_SendPacket(packet, idx);
 }

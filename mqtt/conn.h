@@ -11,8 +11,7 @@
 #define MQTT_UART_HANDLE &huart1  /* 使用的串口句柄，例如 &huart1 或 &huart2 */
 
 /* 日志配置 */
-#define MQTT_LOG_ENABLE         1       /* 1: 开启日志, 0: 关闭日志 */
-#define MQTT_LOG_UART_HANDLE    &huart1 /* 日志输出串口句柄 */
+#define MQTT_LOG_UART_HANDLE    &huart2 /* 日志输出串口句柄 - 注释掉此行以禁用日志 */
 
 #define WIFI_SSID       ""
 #define WIFI_PASSWORD   ""

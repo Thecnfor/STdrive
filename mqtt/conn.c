@@ -15,9 +15,9 @@ static bool is_connected = false;
 /**
  * @brief 日志输出
  */
+#ifdef MQTT_LOG_UART_HANDLE
 static void MQTT_Log(const char *fmt, ...)
 {
-#if MQTT_LOG_ENABLE
     char log_buf[256];
     va_list args;
     
@@ -26,8 +26,10 @@ static void MQTT_Log(const char *fmt, ...)
     va_end(args);
     
     HAL_UART_Transmit(MQTT_LOG_UART_HANDLE, (uint8_t *)log_buf, strlen(log_buf), 100);
-#endif
 }
+#else
+#define MQTT_Log(...) ((void)0)
+#endif
 
 /**
  * @brief 执行 AT 指令并等待期望的响应字符串

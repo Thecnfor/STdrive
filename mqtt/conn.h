@@ -76,15 +76,12 @@
  */
 bool MQTT_Start(void);
 
-void MQTT_ServiceTick(void);
-
 /**
- * @brief 消息处理回调类型
- * @details 当注册了消息回调后（见 `MQTT_SetMessageHandler`），服务例程会在解析到新消息时
- * 调用该回调并将主题与载荷以字符串形式传入。适合“推送式”处理，不需要手动轮询。
- * 原型：`void handler(const char *topic, const char *payload)`
+ * @brief MQTT 服务例程（非阻塞）
+ * @details 放入 while 循环或定时器/任务中周期性调用（建议 50~200ms）。
+ * 自动执行心跳与分阶段重连：仅补齐未就绪阶段（WiFi/TCP/MQTT CONNECT），避免每次全重连。
  */
-typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
+void MQTT_ServiceTick(void);
 
 /**
  * @brief 设置消息回调并启用回调式接收
@@ -100,21 +97,10 @@ typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
  *    - 在合适位置调用 `MQTT_Subscribe("your/topic");`
  * 3) 定时器驱动：若定义 `MQTT_TIM_HANDLE`，无需在主循环或任务中调用 `MQTT_ServiceTick`，回调同样生效。
  * 注意：若改用“轮询式”接收（调用 `MQTT_Process` 自行拉取消息），请不要调用本函数，避免两种模式混用。
+ * @param handler 回调函数原型：`void handler(const char *topic, const char *payload)`
  */
+typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
 void MQTT_SetMessageHandler(MQTT_MessageHandler handler);
-
-/**
- * @brief 检查 MQTT 是否已连接
- * @return true 已建立 MQTT 会话
- * @return false 未连接或发送失败导致断开
- */
-bool MQTT_IsConnected(void);
-
-/**
- * @brief 发送心跳包 (PINGREQ)
- * @details 通常由服务例程在半个 keepalive 周期触发；也可手动调用以维持会话活性
- */
-void MQTT_Heartbeat(void);
 
 /**
  * @brief 发布消息
@@ -136,7 +122,8 @@ bool MQTT_Publish(const char *topic, const char *message);
 bool MQTT_Subscribe(const char *topic);
 
 /**
- * @brief 处理 MQTT 接收数据 (需要在主循环中调用)
+ * @brief 不要直接调用！处理 MQTT 接收数据
+ * @details 服务例程内部调用，用于解析传入的 MQTT 包。若手动轮询接收，需在主循环中调用。
  * 
  * @param topic [out] 输出主题缓冲区
  * @param topic_len 主题缓冲区大小
@@ -146,6 +133,19 @@ bool MQTT_Subscribe(const char *topic);
  * @return false 无新消息
  */
 bool MQTT_Process(char *topic, uint16_t topic_len, char *payload, uint16_t payload_len);
+
+/**
+ * @brief 检查 MQTT 是否已连接
+ * @return true 已建立 MQTT 会话
+ * @return false 未连接或发送失败导致断开
+ */
+bool MQTT_IsConnected(void);
+
+/**
+ * @brief 发送心跳包 (PINGREQ)
+ * @details 通常由服务例程在半个 keepalive 周期触发；也可手动调用以维持会话活性
+ */
+void MQTT_Heartbeat(void);
 
 /**
  * @brief 快速测试 MQTT 完整功能 (连接 -> 订阅 -> 循环发布/接收)

@@ -102,6 +102,82 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
     return false;
 }
 
+static bool ESP_SendAT(const char *cmd, const char *expected, uint32_t timeout_ms)
+{
+    return ESP_Execute(cmd, expected, NULL, 0, timeout_ms);
+}
+
+static bool ESP_SendRaw(uint8_t *data, uint16_t len)
+{
+    HAL_UART_Transmit(MQTT_UART_HANDLE, data, len, 100);
+    return ESP_Execute(NULL, "SEND OK", NULL, 0, AT_CMD_TIMEOUT_LONG);
+}
+
+static uint8_t mqtt_encode_len(uint8_t *buf, uint32_t length)
+{
+    uint8_t len_bytes = 0;
+    do {
+        uint8_t encoded_byte = length % 128;
+        length /= 128;
+        if (length > 0) {
+            encoded_byte |= 0x80;
+        }
+        buf[len_bytes++] = encoded_byte;
+    } while (length > 0);
+    return len_bytes;
+}
+
+static uint16_t mqtt_encode_string(uint8_t *buf, const char *str)
+{
+    uint16_t len = strlen(str);
+    buf[0] = (len >> 8) & 0xFF;
+    buf[1] = len & 0xFF;
+    memcpy(&buf[2], str, len);
+    return len + 2;
+}
+
+static bool MQTT_SendPacket(uint8_t *packet, uint16_t len)
+{
+    char cmd_buf[32];
+    sprintf(cmd_buf, "AT+CIPSEND=%d\r\n", len);
+    
+    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_LONG)) {
+        if (ESP_SendRaw(packet, len)) {
+            return true;
+        }
+    }
+    
+    is_connected = false;
+    return false;
+}
+
+void MQTT_Heartbeat(void)
+{
+    uint8_t packet[2] = {MQTT_PKT_PINGREQ, 0x00};
+    MQTT_SendPacket(packet, 2);
+}
+
+void MQTT_AutoReconnect(void)
+{
+    if (!is_connected) {
+        MQTT_Log("检测到连接断开，尝试重连...\r\n");
+        MQTT_ReconnectStep();
+    }
+}
+
+static void MQTT_ServiceTick(void)
+{
+    static uint32_t last_ping = 0;
+    if (is_connected) {
+        if (HAL_GetTick() - last_ping > (MQTT_KEEPALIVE * 1000) / 2) {
+            last_ping = HAL_GetTick();
+            MQTT_Heartbeat();
+        }
+    } else {
+        MQTT_AutoReconnect();
+    }
+}
+
 /**
  * 内部分阶段自动重连例程说明
  * 1. 先检查 WiFi 状态（AT+CWJAP?），未连接则仅执行入网
@@ -154,30 +230,9 @@ static bool MQTT_ReconnectStep(void)
     return false;
 }
 
-void MQTT_AutoReconnect(void)
-{
-    if (!is_connected) {
-        MQTT_Log("检测到连接断开，尝试重连...\r\n");
-        MQTT_ReconnectStep();
-    }
-}
-
 /**
  * @brief 简化版发送 AT 指令
  */
-static bool ESP_SendAT(const char *cmd, const char *expected, uint32_t timeout_ms)
-{
-    return ESP_Execute(cmd, expected, NULL, 0, timeout_ms);
-}
-
-/**
- * @brief 发送原始数据 (用于 MQTT 报文)
- */
-static bool ESP_SendRaw(uint8_t *data, uint16_t len)
-{
-    HAL_UART_Transmit(MQTT_UART_HANDLE, data, len, 100);
-    return ESP_Execute(NULL, "SEND OK", NULL, 0, AT_CMD_TIMEOUT_LONG);
-}
 
 /* ==========================================
  * MQTT 协议层
@@ -189,19 +244,6 @@ static bool ESP_SendRaw(uint8_t *data, uint16_t len)
  * @param length 剩余长度值
  * @return 写入的字节数
  */
-static uint8_t mqtt_encode_len(uint8_t *buf, uint32_t length)
-{
-    uint8_t len_bytes = 0;
-    do {
-        uint8_t encoded_byte = length % 128;
-        length /= 128;
-        if (length > 0) {
-            encoded_byte |= 0x80;
-        }
-        buf[len_bytes++] = encoded_byte;
-    } while (length > 0);
-    return len_bytes;
-}
 
 /**
  * @brief 编码 MQTT 字符串 (2字节长度 + 字符串内容)
@@ -209,33 +251,10 @@ static uint8_t mqtt_encode_len(uint8_t *buf, uint32_t length)
  * @param str 字符串
  * @return 写入的字节数
  */
-static uint16_t mqtt_encode_string(uint8_t *buf, const char *str)
-{
-    uint16_t len = strlen(str);
-    buf[0] = (len >> 8) & 0xFF;
-    buf[1] = len & 0xFF;
-    memcpy(&buf[2], str, len);
-    return len + 2;
-}
 
 /**
  * @brief 发送 MQTT 报文 (自动处理 AT+CIPSEND)
  */
-static bool MQTT_SendPacket(uint8_t *packet, uint16_t len)
-{
-    char cmd_buf[32];
-    sprintf(cmd_buf, "AT+CIPSEND=%d\r\n", len);
-    
-    if (ESP_SendAT(cmd_buf, ">", AT_CMD_TIMEOUT_LONG)) {
-        if (ESP_SendRaw(packet, len)) {
-            return true;
-        }
-    }
-    
-    /* 发送失败视为连接断开 */
-    is_connected = false;
-    return false;
-}
 
 /* ==========================================
  * 公共接口函数实现
@@ -423,24 +442,6 @@ bool MQTT_Subscribe(const char *topic)
     return MQTT_SendPacket(packet, idx);
 }
 
-void MQTT_Heartbeat(void)
-{
-    uint8_t packet[2] = {MQTT_PKT_PINGREQ, 0x00};
-    MQTT_SendPacket(packet, 2);
-}
-
-static void MQTT_ServiceTick(void)
-{
-    static uint32_t last_ping = 0;
-    if (is_connected) {
-        if (HAL_GetTick() - last_ping > (MQTT_KEEPALIVE * 1000) / 2) {
-            last_ping = HAL_GetTick();
-            MQTT_Heartbeat();
-        }
-    } else {
-        MQTT_AutoReconnect();
-    }
-}
 
 /* 定时器中断回调挂钩
  * 仅当中断来源为 `MQTT_TIM_HANDLE` 时驱动后台服务

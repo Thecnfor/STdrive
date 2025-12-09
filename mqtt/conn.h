@@ -59,13 +59,13 @@
  * @brief 一键启动 MQTT (初始化 + 入网 + TCP + CONNECT)
  * @details 初始化 ESP8266、配置 WiFi 并建立到服务器的 TCP 连接，随后发送 MQTT CONNECT 完成会话建立。
  * 使用方法：
- * 1) 非 RTOS：在 main 初始化后调用一次 `MQTT_Start()`，随后在 while 循环中周期性调用 `MQTT_ServiceTick()`；
- * 2) RTOS：在已有任务中周期性调用 `MQTT_ServiceTick()`，或定义 `MQTT_TIM_HANDLE` 由定时器中断驱动服务例程，无需手动轮询。
+ * 1) 非 RTOS：在 main 初始化后调用一次 `MQTT_Start()`，随后在 while 循环中周期性调用 `MQTT_Service()`；
+ * 2) RTOS：在已有任务中周期性调用 `MQTT_Service()`，或定义 `MQTT_TIM_HANDLE` 由定时器中断驱动服务例程，无需手动轮询。
  * 示例（非 RTOS）：
  *   // 初始化硬件...
  *   MQTT_Start();
  *   while (1) {
- *       MQTT_ServiceTick();
+ *       MQTT_Service();
  *       if (MQTT_IsConnected()) {
  *           MQTT_Publish("test/status", "ok");
  *       }
@@ -81,7 +81,7 @@ bool MQTT_Start(void);
  * @details 放入 while 循环或定时器/任务中周期性调用（建议 50~200ms）。
  * 自动执行心跳与分阶段重连：仅补齐未就绪阶段（WiFi/TCP/MQTT CONNECT），避免每次全重连。
  */
-void MQTT_ServiceTick(void);
+void MQTT_Service(void);
 
 /**
  * @brief 设置消息回调并启用回调式接收
@@ -90,12 +90,12 @@ void MQTT_ServiceTick(void);
  *    - `MQTT_Start();`
  *    - `MQTT_SetMessageHandler(handler);`
  *    - `MQTT_Subscribe("your/topic");`
- *    - `while (1) { MQTT_ServiceTick(); HAL_Delay(50); }`
+ *    - `while (1) { MQTT_Service(); HAL_Delay(50); }`
  * 2) RTOS：
  *    - `MQTT_SetMessageHandler(handler);`
- *    - 在已有任务中周期性调用 `MQTT_ServiceTick()`，或定义 `MQTT_TIM_HANDLE` 由定时器中断驱动；
+ *    - 在已有任务中周期性调用 `MQTT_Service()`，或定义 `MQTT_TIM_HANDLE` 由定时器中断驱动；
  *    - 在合适位置调用 `MQTT_Subscribe("your/topic");`
- * 3) 定时器驱动：若定义 `MQTT_TIM_HANDLE`，无需在主循环或任务中调用 `MQTT_ServiceTick`，回调同样生效。
+ * 3) 定时器驱动：若定义 `MQTT_TIM_HANDLE`，无需在主循环或任务中调用 `MQTT_Service`，回调同样生效。
  * 注意：若改用“轮询式”接收（调用 `MQTT_Process` 自行拉取消息），请不要调用本函数，避免两种模式混用。
  * @param handler 回调函数原型：`void handler(const char *topic, const char *payload)`
  */

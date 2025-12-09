@@ -166,7 +166,7 @@ void MQTT_AutoReconnect(void)
     }
 }
 
-void MQTT_ServiceTick(void)
+void MQTT_Service(void)
 {
     static uint32_t last_ping = 0;
     if (is_connected) {
@@ -351,7 +351,7 @@ bool MQTT_Publish(const char *topic, const char *message)
 {
     if (!is_connected) {
         MQTT_Log("发布失败: 未连接\r\n");
-        MQTT_ServiceTick();
+        MQTT_Service();
         return false;
     }
     
@@ -398,7 +398,7 @@ bool MQTT_Subscribe(const char *topic)
 {
     if (!is_connected) {
         MQTT_Log("订阅失败: 未连接\r\n");
-        MQTT_ServiceTick();
+        MQTT_Service();
         return false;
     }
 
@@ -439,7 +439,7 @@ void MQTT_SetMessageHandler(MQTT_MessageHandler handler)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim == MQTT_TIM_HANDLE) {
-        MQTT_ServiceTick();
+        MQTT_Service();
     }
 }
 #endif

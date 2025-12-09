@@ -7,6 +7,7 @@
  * 私有变量
  * ========================================== */
 static bool is_connected = false;
+static MQTT_MessageHandler message_handler = NULL;
 
 /* ==========================================
  * 辅助函数
@@ -165,7 +166,7 @@ void MQTT_AutoReconnect(void)
     }
 }
 
-static void MQTT_ServiceTick(void)
+void MQTT_ServiceTick(void)
 {
     static uint32_t last_ping = 0;
     if (is_connected) {
@@ -175,6 +176,14 @@ static void MQTT_ServiceTick(void)
         }
     } else {
         MQTT_AutoReconnect();
+    }
+
+    if (message_handler) {
+        char topic[64];
+        char payload[128];
+        if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
+            message_handler(topic, payload);
+        }
     }
 }
 
@@ -416,21 +425,9 @@ bool MQTT_Subscribe(const char *topic)
     return MQTT_SendPacket(packet, idx);
 }
 
-void MQTT_Service(void)
+void MQTT_SetMessageHandler(MQTT_MessageHandler handler)
 {
-    MQTT_ServiceTick();
-}
-
-void MQTT_Task(void *argument)
-{
-    static bool started = false;
-    while (1) {
-        if (!started) {
-            started = MQTT_Start();
-        }
-        MQTT_ServiceTick();
-        HAL_Delay(50);
-    }
+    message_handler = handler;
 }
 
 

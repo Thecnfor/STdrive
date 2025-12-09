@@ -59,39 +59,49 @@
  * @brief 一键启动 MQTT (初始化 + 入网 + TCP + CONNECT)
  * @details 初始化 ESP8266、配置 WiFi 并建立到服务器的 TCP 连接，随后发送 MQTT CONNECT 完成会话建立。
  * 使用方法：
- * 1) 非 RTOS：在 main 初始化后调用一次 `MQTT_Start()`，随后在 while 循环中周期性调用 `MQTT_Service()`；
- * 2) RTOS：直接创建任务入口 `MQTT_Task()`，任务内部会自动调用 `MQTT_Start()` 并循环服务；
- * 3) 也可以在工程中定义 `MQTT_TIM_HANDLE`，由定时器中断驱动服务例程，无需手动轮询。
+ * 1) 非 RTOS：在 main 初始化后调用一次 `MQTT_Start()`，随后在 while 循环中周期性调用 `MQTT_ServiceTick()`；
+ * 2) RTOS：在已有任务中周期性调用 `MQTT_ServiceTick()`，或定义 `MQTT_TIM_HANDLE` 由定时器中断驱动服务例程，无需手动轮询。
  * 示例（非 RTOS）：
  *   // 初始化硬件...
  *   MQTT_Start();
  *   while (1) {
- *       MQTT_Service();
+ *       MQTT_ServiceTick();
  *       if (MQTT_IsConnected()) {
  *           MQTT_Publish("test/status", "ok");
  *       }
  *       HAL_Delay(50);
  *   }
- * 示例（RTOS）：
- *   // xTaskCreate(MQTT_Task, "mqtt", stack, NULL, prio, NULL);
  * @return true 启动成功并进入已连接状态
  * @return false 任一阶段失败（AT、WiFi、TCP、MQTT）
  */
 bool MQTT_Start(void);
 
-/**
- * @brief MQTT 服务例程（非阻塞）
- * @details 放入 while 循环或定时器/任务中周期性调用（建议 50~200ms）。
- * 自动执行心跳与分阶段重连：仅补齐未就绪阶段（WiFi/TCP/MQTT CONNECT），避免每次全重连。
- */
-void MQTT_Service(void);
+void MQTT_ServiceTick(void);
 
 /**
- * @brief MQTT RTOS 任务入口
- * @details 在任务中自动调用 `MQTT_Start()` 并周期性执行服务例程。
- * 示例：xTaskCreate(MQTT_Task, "mqtt", stack, NULL, prio, NULL);
+ * @brief 消息处理回调类型
+ * @details 当注册了消息回调后（见 `MQTT_SetMessageHandler`），服务例程会在解析到新消息时
+ * 调用该回调并将主题与载荷以字符串形式传入。适合“推送式”处理，不需要手动轮询。
+ * 原型：`void handler(const char *topic, const char *payload)`
  */
-void MQTT_Task(void *argument);
+typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
+
+/**
+ * @brief 设置消息回调并启用回调式接收
+ * @details 使用方法：
+ * 1) 非 RTOS：
+ *    - `MQTT_Start();`
+ *    - `MQTT_SetMessageHandler(handler);`
+ *    - `MQTT_Subscribe("your/topic");`
+ *    - `while (1) { MQTT_ServiceTick(); HAL_Delay(50); }`
+ * 2) RTOS：
+ *    - `MQTT_SetMessageHandler(handler);`
+ *    - 在已有任务中周期性调用 `MQTT_ServiceTick()`，或定义 `MQTT_TIM_HANDLE` 由定时器中断驱动；
+ *    - 在合适位置调用 `MQTT_Subscribe("your/topic");`
+ * 3) 定时器驱动：若定义 `MQTT_TIM_HANDLE`，无需在主循环或任务中调用 `MQTT_ServiceTick`，回调同样生效。
+ * 注意：若改用“轮询式”接收（调用 `MQTT_Process` 自行拉取消息），请不要调用本函数，避免两种模式混用。
+ */
+void MQTT_SetMessageHandler(MQTT_MessageHandler handler);
 
 /**
  * @brief 检查 MQTT 是否已连接

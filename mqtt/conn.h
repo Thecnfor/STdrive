@@ -121,6 +121,8 @@ bool MQTT_Publish(const char *topic, const char *message);
  */
 bool MQTT_Subscribe(const char *topic);
 
+/* ***************************无需调用******************************* */
+
 /**
  * @brief 不要直接调用！处理 MQTT 接收数据
  * @details 服务例程内部调用，用于解析传入的 MQTT 包。若手动轮询接收，需在主循环中调用。

@@ -213,17 +213,11 @@ bool MQTT_Start(void)
     MQTT_Log("=== MQTT 启动 ===\r\n");
 
     /* 1. 基础 AT 检查 */
-    /* 增加重试机制，防止模块未准备好 */
-    bool at_ok = false;
-    for (int i = 0; i < 5; i++) {
-        if (ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) {
-            at_ok = true;
-            break;
-        }
-        MQTT_Log("AT 检查重试 %d/5...\r\n", i + 1);
-        HAL_Delay(500);
+    if (!ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) {
+        MQTT_Log("AT 检查失败\r\n");
+        return false;
     }
-
+    
     /* 2. WiFi 配置与连接 */
     ESP_SendAT("AT+CWMODE=1\r\n", "OK", AT_CMD_TIMEOUT_NORMAL);
 
@@ -292,13 +286,6 @@ bool MQTT_Start(void)
     if (MQTT_SendPacket(packet, idx)) {
         is_connected = true;
         MQTT_Log("MQTT 已连接\r\n");
-        /* 启动后台服务驱动
-         * 若定义 `MQTT_TIM_HANDLE` 为某定时器句柄，则使用定时中断周期性调用服务例程
-         * 未定义亦可工作：服务例程在关键路径按需触发，无需用户额外轮询
-         */
-        #ifdef MQTT_TIM_HANDLE
-        HAL_TIM_Base_Start_IT(MQTT_TIM_HANDLE);
-        #endif
         return true;
     }
     

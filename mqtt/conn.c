@@ -44,19 +44,29 @@ static void MQTT_Log(const char *fmt, ...)
  */
 static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, uint16_t buf_len, uint32_t timeout_ms)
 {
-    char local_buf[128]; // 若调用者不需要完整数据，使用小缓冲区
+    char local_buf[128];
     char *p_buf = out_buf ? out_buf : local_buf;
     uint16_t p_len = out_buf ? buf_len : sizeof(local_buf);
     uint16_t idx = 0;
     uint32_t start_time = HAL_GetTick();
 
-    /* 清空接收缓冲区 */
     memset(p_buf, 0, p_len);
-    
-    /* 发送指令 */
+
     if (cmd != NULL) {
-        MQTT_Log("[CMD] %s", cmd);
-        HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t *)cmd, strlen(cmd), 100);
+        uint8_t b;
+        while (HAL_UART_Receive(MQTT_UART_HANDLE, &b, 1, 0) == HAL_OK) {}
+
+        char send_buf[160];
+        size_t c_len = strlen(cmd);
+        if (c_len > sizeof(send_buf) - 3) c_len = sizeof(send_buf) - 3;
+        memcpy(send_buf, cmd, c_len);
+        if (!(c_len >= 2 && send_buf[c_len-2] == '\r' && send_buf[c_len-1] == '\n')) {
+            send_buf[c_len++] = '\r';
+            send_buf[c_len++] = '\n';
+        }
+        send_buf[c_len] = '\0';
+        MQTT_Log("[CMD] %s", send_buf);
+        HAL_UART_Transmit(MQTT_UART_HANDLE, (uint8_t *)send_buf, (uint16_t)c_len, 100);
     }
 
     /* 循环接收 */
@@ -73,17 +83,19 @@ static bool ESP_Execute(const char *cmd, const char *expected, char *out_buf, ui
                     MQTT_Log("[响应] 成功 (%s)\r\n", expected);
                     return true;
                 }
+                if (strstr(p_buf, "ERROR") || strstr(p_buf, "FAIL") || strstr(p_buf, "CLOSED")) {
+                    return false;
+                }
             } else {
-                /* 缓冲区满，重置索引 (循环覆盖，防止溢出) 
-                   注意：这可能会截断长响应，实际应用根据需要调整 */
-                idx = 0; 
-                // 或者 break; 取决于策略
+                uint16_t keep = p_len / 2;
+                memmove(p_buf, p_buf + (p_len - keep), keep);
+                idx = keep;
             }
         }
     }
 
     if (expected == NULL) {
-        return true; /* 无期望响应，超时即完成 */
+        return true;
     }
 
     MQTT_Log("[响应] 超时或失败\r\n");

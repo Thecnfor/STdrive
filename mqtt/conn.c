@@ -14,6 +14,7 @@ static MQTT_MessageHandler message_handler = NULL;
 typedef struct {
     char topic[64];
     bool is_subscribed;
+    MQTT_MessageHandler callback; /* 特定回调函数 */
 } MQTT_Subscription_t;
 
 static MQTT_Subscription_t subscriptions[MAX_SUBSCRIPTIONS];
@@ -24,6 +25,39 @@ static uint8_t subscription_count = 0;
  * ========================================== */
 
 static bool MQTT_SendSubscribePacket(const char *topic);
+
+/**
+ * @brief 检查 Topic 是否匹配 Filter (支持 + 和 #)
+ */
+static bool MQTT_TopicMatched(const char *filter, const char *topic)
+{
+    const char *f = filter;
+    const char *t = topic;
+    
+    while (*f && *t) {
+        if (*f == '+') {
+            /* + 匹配一个层级 */
+            f++;
+            while (*t && *t != '/') t++;
+            continue;
+        } else if (*f == '#') {
+            /* # 匹配剩余所有 */
+            return true; 
+        } else {
+            if (*f != *t) return false;
+        }
+        f++;
+        t++;
+    }
+    
+    /* 完全匹配 */
+    if (*f == '\0' && *t == '\0') return true;
+    
+    /* 特殊情况: "path/#" 匹配 "path" */
+    if (*f == '#' && f > filter && *(f-1) == '/' && *t == '\0') return true;
+    
+    return false;
+}
 
 /**
  * @brief 日志输出
@@ -194,11 +228,38 @@ void MQTT_Service(void)
         MQTT_AutoReconnect();
     }
 
-    if (message_handler) {
+    /* 处理接收到的消息
+     * 仅当注册了全局回调或特定回调时才由 Service 自动处理
+     * 否则保留数据供用户手动调用 MQTT_Process 获取
+     */
+    bool has_callbacks = (message_handler != NULL);
+    if (!has_callbacks) {
+        for (int i = 0; i < subscription_count; i++) {
+            if (subscriptions[i].callback != NULL) {
+                has_callbacks = true;
+                break;
+            }
+        }
+    }
+
+    if (has_callbacks) {
         char topic[64];
         char payload[128];
         if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
-            message_handler(topic, payload);
+            bool handled = false;
+            
+            /* 1. 查找并调用匹配的特定回调 */
+            for (int i = 0; i < subscription_count; i++) {
+                if (subscriptions[i].callback && MQTT_TopicMatched(subscriptions[i].topic, topic)) {
+                    subscriptions[i].callback(topic, payload);
+                    handled = true;
+                }
+            }
+
+            /* 2. 如果未被特定回调处理，调用全局回调 */
+            if (!handled && message_handler) {
+                message_handler(topic, payload);
+            }
         }
     }
 }
@@ -400,11 +461,13 @@ static bool MQTT_SendSubscribePacket(const char *topic)
     return MQTT_SendPacket(packet, idx);
 }
 
-bool MQTT_Subscribe(const char *topic)
+bool MQTT_SubscribeCallback(const char *topic, MQTT_MessageHandler handler)
 {
     /* 检查是否已存在 */
     for (int i = 0; i < subscription_count; i++) {
         if (strncmp(subscriptions[i].topic, topic, sizeof(subscriptions[i].topic)) == 0) {
+            /* 更新回调函数 */
+            subscriptions[i].callback = handler;
             // MQTT_Log("订阅已注册: %s\r\n", topic);
             return true;
         }
@@ -415,6 +478,7 @@ bool MQTT_Subscribe(const char *topic)
         strncpy(subscriptions[subscription_count].topic, topic, sizeof(subscriptions[subscription_count].topic) - 1);
         subscriptions[subscription_count].topic[sizeof(subscriptions[subscription_count].topic) - 1] = '\0';
         subscriptions[subscription_count].is_subscribed = false;
+        subscriptions[subscription_count].callback = handler;
         subscription_count++;
         MQTT_Log("订阅注册成功: %s\r\n", topic);
         return true;
@@ -422,6 +486,11 @@ bool MQTT_Subscribe(const char *topic)
 
     MQTT_Log("订阅注册失败: 列表已满\r\n");
     return false;
+}
+
+bool MQTT_Subscribe(const char *topic)
+{
+    return MQTT_SubscribeCallback(topic, NULL);
 }
 
 bool MQTT_Unsubscribe(const char *topic)
@@ -488,6 +557,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
  * 测试函数
  * ========================================== */
 
+static void OnTestCmd(const char *topic, const char *payload)
+{
+    MQTT_Log("[Callback] 收到命令: %s -> %s\r\n", topic, payload);
+    
+    /* 简单的 Echo 逻辑 */
+    char reply[128];
+    snprintf(reply, sizeof(reply), "Echo: %.110s", payload);
+    MQTT_Publish("test/reply", reply);
+}
+
 /**
  * @brief 快速测试 MQTT 完整功能 (连接 -> 订阅 -> 循环发布/接收)
  * @details 将此函数放在 main 函数的 while(1) 循环中调用
@@ -505,7 +584,8 @@ void MQTT_Test_Run(void)
 
     if (!is_subscribed && MQTT_IsConnected()) {
         HAL_Delay(500);
-        if (MQTT_Subscribe("test/cmd")) {
+        /* 演示：订阅并注册特定回调 */
+        if (MQTT_SubscribeCallback("test/cmd", OnTestCmd)) {
             is_subscribed = true;
         }
     }
@@ -517,13 +597,9 @@ void MQTT_Test_Run(void)
         MQTT_Publish("test/status", msg);
     }
 
-    char topic[64];
-    char payload[128];
-    if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
-        char reply[128];
-        snprintf(reply, sizeof(reply), "Echo: %.110s", payload);
-        MQTT_Publish("test/reply", reply);
-    }
+    /* 注意：由于注册了回调，消息接收由 MQTT_Service 自动处理，
+       此处无需手动调用 MQTT_Process。
+    */
 }
 
 /* ==========================================

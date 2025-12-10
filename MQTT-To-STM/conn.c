@@ -534,6 +534,47 @@ bool MQTT_Unsubscribe(const char *topic)
     return MQTT_SendPacket(packet, idx);
 }
 
+void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list, uint8_t count)
+{
+    /* 1. 遍历当前订阅列表，移除不在新列表中的主题 */
+    for (int i = 0; i < subscription_count; ) {
+        bool found = false;
+        for (int j = 0; j < count; j++) {
+            if (list[j].topic != NULL && 
+                strncmp(subscriptions[i].topic, list[j].topic, sizeof(subscriptions[i].topic)) == 0) {
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found) {
+            /* 不在新列表中，取消订阅 */
+            /* 先保存 Topic，因为 MQTT_Unsubscribe 会修改数组 */
+            char topic_to_remove[64];
+            strncpy(topic_to_remove, subscriptions[i].topic, sizeof(topic_to_remove)-1);
+            topic_to_remove[sizeof(topic_to_remove)-1] = '\0';
+            
+            MQTT_Unsubscribe(topic_to_remove);
+            /* MQTT_Unsubscribe 成功移除后，后续元素前移，当前索引 i 指向新元素，故无需 i++ */
+            /* 注意：若移除失败（理论上不应发生），可能导致死循环，但此处 Topic 来自列表，应必能找到 */
+        } else {
+            /* 在新列表中，保留 */
+            i++;
+        }
+    }
+
+    /* 2. 遍历新列表，添加/更新主题 */
+    for (int j = 0; j < count; j++) {
+        if (list[j].topic == NULL) continue;
+
+        /* MQTT_SubscribeCallback 会自动处理：
+         * - 若已存在：更新回调函数
+         * - 若不存在：添加到列表并发送订阅请求
+         */
+        MQTT_SubscribeCallback(list[j].topic, list[j].handler);
+    }
+}
+
 void MQTT_SetMessageHandler(MQTT_MessageHandler handler)
 {
     message_handler = handler;

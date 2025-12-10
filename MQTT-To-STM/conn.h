@@ -60,11 +60,6 @@
  * ========================================== */
 
 /**
- * @brief MQTT 消息处理回调函数类型
- */
-typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
-
-/**
  * @brief 一键启动 MQTT (初始化 + 入网 + TCP + CONNECT)
  * @details 初始化 ESP8266、配置 WiFi 并建立到服务器的 TCP 连接，随后发送 MQTT
  * CONNECT 完成会话建立。 使用方法： 1) 非 RTOS：在 main 初始化后调用一次
@@ -104,6 +99,28 @@ void MQTT_Service(void);
 bool MQTT_Publish(const char *topic, const char *message);
 
 /**
+ * @brief 订阅配置结构体
+ */
+typedef struct {
+  const char *topic;           /* 主题名称 */
+  MQTT_MessageHandler handler; /* 对应的回调函数 */
+} MQTT_SubscribeInfo;
+
+/**
+ * @brief 批量设置订阅列表
+ * @details 根据传入的列表自动管理订阅状态：
+ *          - 列表中的新主题：自动发起订阅
+ *          - 不在列表中的旧主题：自动取消订阅
+ *          - 已存在的主题：更新回调函数
+ *
+ * @param list 订阅配置数组
+ * @param count 数组元素数量
+ */
+void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list, uint8_t count);
+
+/* ***************************无需调用******************************* */
+
+/**
  * @brief 订阅主题
  *
  * @param topic 主题
@@ -111,6 +128,15 @@ bool MQTT_Publish(const char *topic, const char *message);
  * @return false 发送失败
  */
 bool MQTT_Subscribe(const char *topic);
+
+/**
+ * @brief 取消订阅主题
+ *
+ * @param topic 主题
+ * @return true 取消订阅请求发送成功
+ * @return false 发送失败
+ */
+bool MQTT_Unsubscribe(const char *topic);
 
 /**
  * @brief 订阅主题并注册特定回调函数
@@ -123,17 +149,6 @@ bool MQTT_Subscribe(const char *topic);
  * @return false 失败（如列表已满）
  */
 bool MQTT_SubscribeCallback(const char *topic, MQTT_MessageHandler handler);
-
-/**
- * @brief 取消订阅主题
- *
- * @param topic 主题
- * @return true 取消订阅请求发送成功
- * @return false 发送失败
- */
-bool MQTT_Unsubscribe(const char *topic);
-
-/* ***************************无需调用******************************* */
 
 /**
  * @brief 设置消息回调并启用回调式接收
@@ -155,6 +170,11 @@ bool MQTT_Unsubscribe(const char *topic);
  * *payload)`
  */
 void MQTT_SetMessageHandler(MQTT_MessageHandler handler);
+
+/**
+ * @brief MQTT 消息处理回调函数类型
+ */
+typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
 
 /**
  * @brief 不要直接调用！处理 MQTT 接收数据

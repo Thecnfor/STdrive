@@ -60,6 +60,11 @@
  * ========================================== */
 
 /**
+ * @brief MQTT 消息处理回调函数类型
+ */
+typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
+
+/**
  * @brief 一键启动 MQTT (初始化 + 入网 + TCP + CONNECT)
  * @details 初始化 ESP8266、配置 WiFi 并建立到服务器的 TCP 连接，随后发送 MQTT
  * CONNECT 完成会话建立。 使用方法： 1) 非 RTOS：在 main 初始化后调用一次
@@ -170,11 +175,6 @@ bool MQTT_SubscribeCallback(const char *topic, MQTT_MessageHandler handler);
  * *payload)`
  */
 void MQTT_SetMessageHandler(MQTT_MessageHandler handler);
-
-/**
- * @brief MQTT 消息处理回调函数类型
- */
-typedef void (*MQTT_MessageHandler)(const char *topic, const char *payload);
 
 /**
  * @brief 不要直接调用！处理 MQTT 接收数据

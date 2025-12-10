@@ -625,10 +625,14 @@ void MQTT_Test_Run(void)
 
     if (!is_subscribed && MQTT_IsConnected()) {
         HAL_Delay(500);
-        /* 演示：订阅并注册特定回调 */
-        if (MQTT_SubscribeCallback("test/cmd", OnTestCmd)) {
-            is_subscribed = true;
-        }
+        /* 演示：使用新的批量订阅接口 */
+        static MQTT_SubscribeInfo test_subs[] = {
+            {"test/cmd", OnTestCmd},
+            /* 可以在此添加更多测试订阅 */
+        };
+        
+        MQTT_SetSubscriptions(test_subs, sizeof(test_subs)/sizeof(test_subs[0]));
+        is_subscribed = true;
     }
 
     if (MQTT_IsConnected() && (HAL_GetTick() - last_pub_time > 5000)) {

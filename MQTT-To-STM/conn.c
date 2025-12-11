@@ -615,24 +615,24 @@ void MQTT_Test_Run(void) {
   static bool started = false;
   static bool is_subscribed = false;
 
+  /* 1. 启动连接 */
   if (!started) {
     MQTT_Start();
     started = true;
   }
 
+  /* 2. 订阅主题 (使用底层接口) */
   if (!is_subscribed && MQTT_IsConnected()) {
     HAL_Delay(500);
-    /* 演示：使用新的批量订阅接口 */
-    static MQTT_SubscribeInfo test_subs[] = {
-        {"test/cmd", OnTestCmd},
-        {"LED", OnLedControl}, /* 添加 LED 主题订阅 */
-        {NULL, NULL}           /* 必须以 NULL 结尾 */
-    };
 
-    MQTT_SetSubscriptions(test_subs); // 传递数组首地址即可
+    /* 直接调用底层订阅接口 */
+    MQTT_Subscribe("test/cmd");
+    MQTT_Subscribe("LED");
+
     is_subscribed = true;
   }
 
+  /* 3. 周期性发布消息 */
   if (MQTT_IsConnected() && (HAL_GetTick() - last_pub_time > 5000)) {
     last_pub_time = HAL_GetTick();
     char msg[64];
@@ -640,47 +640,34 @@ void MQTT_Test_Run(void) {
     MQTT_Publish("test/status", msg);
   }
 
-  /*
-   * 手动轮询接收：直接调用 MQTT_Process 获取原始消息
-   * 这种方式绕过了自动回调分发机制 (MQTT_Service)，让用户完全控制接收流程
-   */
+  /* 4. 手动轮询接收 (最底层方式) */
   char topic[64];
   char payload[128];
 
-  /* 尝试接收并解析一个 MQTT 包 */
+  /* 直接从串口缓冲区尝试解析一个 MQTT 包 */
   if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
     MQTT_Log("收到消息: Topic=%s, Payload=%s\r\n", topic, payload);
 
-    /* 简单的 Topic 匹配逻辑 */
+    /* 简单的字符串匹配 */
     if (strcmp(topic, "LED") == 0) {
       MQTT_Log("执行 LED 控制...\r\n");
-      /* 将 Payload 直接转发到 huart2 */
       HAL_UART_Transmit(&huart2, (uint8_t *)payload, strlen(payload), 100);
-    } else if (strcmp(topic, "test/cmd") == 0) {
-      /* 处理测试命令 */
-      OnTestCmd(topic, payload);
     }
   }
 
-  /*
-   * 必须调用 MQTT_Heartbeat 或简单的 Service 来维持心跳
-   * 但为了避免 Service 里的自动接收逻辑抢走数据，这里我们仅保留心跳和重连部分
-   * 或者，更简单的做法是：如果使用了 MQTT_Process 手动接收，就不要再依赖
-   * Service 的自动回调 只需要保证定期发送心跳即可。
-   */
-  static uint32_t last_check = 0;
-  if (HAL_GetTick() - last_check > 1000) {
-    last_check = HAL_GetTick();
-    if (is_connected) {
-      /* 简单的保活检查 */
-      static uint32_t last_ping = 0;
-      if (HAL_GetTick() - last_ping > (MQTT_KEEPALIVE * 1000) / 2) {
-        last_ping = HAL_GetTick();
-        MQTT_Heartbeat();
-      }
-    } else {
-      /* 掉线重连 */
-      MQTT_AutoReconnect();
+  /* 5. 手动心跳保活 (替代 MQTT_Service) */
+  static uint32_t last_ping = 0;
+  if (is_connected) {
+    if (HAL_GetTick() - last_ping > (MQTT_KEEPALIVE * 1000) / 2) {
+      last_ping = HAL_GetTick();
+      MQTT_Heartbeat();
+    }
+  } else {
+    /* 简单的重连尝试 */
+    static uint32_t last_reconnect = 0;
+    if (HAL_GetTick() - last_reconnect > 5000) {
+      last_reconnect = HAL_GetTick();
+      MQTT_Start();
     }
   }
 }

@@ -21,7 +21,7 @@
 #define WIFI_SSID ""
 #define WIFI_PASSWORD ""
 
-#define MQTT_BROKER ""
+#define MQTT_BROKER "emqx.van.xrak.xyz"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT_ID "xrak"
 #define MQTT_KEEPALIVE 60

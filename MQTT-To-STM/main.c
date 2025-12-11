@@ -94,21 +94,15 @@ int main(void) {
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-  // 启动 MQTT
   MQTT_Start();
-
-  // 设置订阅
-  // static MQTT_SubscribeInfo my_subs[] = {
-  //     {"LED", OnLedControl},
-  //     {NULL, NULL}
-  // };
-  // MQTT_SetSubscriptions(my_subs);
+  MQTT_SubscribeInfo my_subs[] = {{"LED", OnLedControl}, {NULL, NULL}};
+  MQTT_SetSubscriptions(my_subs);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
-    // MQTT_Test_Run();
+    MQTT_Service();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -151,12 +145,27 @@ void SystemClock_Config(void) {
 
 /* USER CODE BEGIN 4 */
 void OnLedControl(const char *topic, const char *payload) {
+  // 调试输出，帮助定位问题
+  char log_buf[64];
+  // 假设 huart2 用于调试输出，如果使用了其他串口请修改
+  snprintf(log_buf, sizeof(log_buf), "[CMD] Topic: %s, Payload: [%s]\r\n",
+           topic, payload);
+  HAL_UART_Transmit(&huart2, (uint8_t *)log_buf, strlen(log_buf), 100);
+
   // 控制 GA0 (PA0)
   // 根据实际电路调整高低电平含义，通常低电平点亮
   if (strcmp(payload, "ON") == 0) {
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
   } else if (strcmp(payload, "OFF") == 0) {
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+  } else {
+    // 处理未知指令或格式不匹配（例如包含换行符）
+    // 尝试去除可能的换行符后再次比较，或者使用 strncmp
+    if (strncmp(payload, "ON", 2) == 0) {
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+    } else if (strncmp(payload, "OFF", 3) == 0) {
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+    }
   }
 }
 /* USER CODE END 4 */

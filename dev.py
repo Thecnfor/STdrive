@@ -55,7 +55,7 @@ def main():
                     msg = "ON"
                     is_on = True
                 elif key == '0':
-                    msg = "LED_OFF"
+                    msg = "OFF"
                     is_on = False
                 elif key == 't':
                     is_on = not is_on

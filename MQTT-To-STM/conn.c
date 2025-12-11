@@ -674,16 +674,6 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload,
   if (rx_idx == 0)
     return false;
 
-  /* 调试：打印缓冲区前 64 字节 */
-  MQTT_Log("RX_BUF[%d]: ", rx_idx);
-  for(int k=0; k<rx_idx && k<64; k++) {
-      if(rx_buffer[k] >= 32 && rx_buffer[k] <= 126)
-          MQTT_Log("%c", rx_buffer[k]);
-      else
-          MQTT_Log("[%02X]", rx_buffer[k]);
-  }
-  MQTT_Log("\r\n"); 
-
   /* 简单的解析逻辑：寻找 +IPD, */
   char *ipd_ptr = strstr((char *)rx_buffer, "+IPD,");
   if (ipd_ptr) {

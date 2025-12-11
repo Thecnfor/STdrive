@@ -55,7 +55,6 @@ void LED_OFF(const char *topic, const char *payload);
 void LED_ON(void);
 /* USER CODE BEGIN PFP */
 void OnLedControl(const char *topic, const char *payload);
-void AT_MQTT_Test_Run(void); /* 声明新测试函数 */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -104,9 +103,6 @@ int main(void) {
   //     {NULL, NULL}
   // };
   // MQTT_SetSubscriptions(my_subs);
-
-  /* 直接运行 AT 测试 (这会进入死循环) */
-  AT_MQTT_Test_Run();
   /* USER CODE END 2 */
 
   /* Infinite loop */

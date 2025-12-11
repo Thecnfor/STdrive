@@ -277,24 +277,12 @@ bool MQTT_Start(void) {
 
   /* 1. 基础 AT 检查 */
   /* 增加重试机制，防止模块未准备好 */
-  bool at_ok = false;
-  for (int i = 0; i < 5; i++) {
-    if (ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT)) {
-      at_ok = true;
-      break;
-    }
-    MQTT_Log("AT 检查重试 %d/5...\r\n", i + 1);
-    HAL_Delay(500);
-  }
-
-  if (!at_ok) {
-    MQTT_Log("AT 检查失败，模块无响应\r\n");
-    return false;
-  }
+  ESP_SendAT("AT\r\n", "OK", AT_CMD_TIMEOUT_SHORT))
 
   /* 2. WiFi 配置与连接 */
   ESP_SendAT("AT+CWMODE=1\r\n", "OK", AT_CMD_TIMEOUT_NORMAL);
-
+  ESP_SendAT("AT+CMD?\r\n", "OK", AT_CMD_TIMEOUT_SHORT))
+  return false;
   /* 检查是否已连接目标 WiFi */
   /* 发送 AT+CWJAP? 并检查响应中是否包含 SSID */
   bool wifi_connected = false;

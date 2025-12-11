@@ -640,11 +640,49 @@ void MQTT_Test_Run(void) {
     MQTT_Publish("test/status", msg);
   }
 
-  /* 注意：由于注册了回调，消息接收由 MQTT_Service 自动处理，
-     此处无需手动调用 MQTT_Process。
-     但若未启用定时器中断驱动，需在此处手动调用 MQTT_Service。
-  */
-  MQTT_Service();
+  /*
+   * 手动轮询接收：直接调用 MQTT_Process 获取原始消息
+   * 这种方式绕过了自动回调分发机制 (MQTT_Service)，让用户完全控制接收流程
+   */
+  char topic[64];
+  char payload[128];
+
+  /* 尝试接收并解析一个 MQTT 包 */
+  if (MQTT_Process(topic, sizeof(topic), payload, sizeof(payload))) {
+    MQTT_Log("收到消息: Topic=%s, Payload=%s\r\n", topic, payload);
+
+    /* 简单的 Topic 匹配逻辑 */
+    if (strcmp(topic, "LED") == 0) {
+      MQTT_Log("执行 LED 控制...\r\n");
+      /* 将 Payload 直接转发到 huart2 */
+      HAL_UART_Transmit(&huart2, (uint8_t *)payload, strlen(payload), 100);
+    } else if (strcmp(topic, "test/cmd") == 0) {
+      /* 处理测试命令 */
+      OnTestCmd(topic, payload);
+    }
+  }
+
+  /*
+   * 必须调用 MQTT_Heartbeat 或简单的 Service 来维持心跳
+   * 但为了避免 Service 里的自动接收逻辑抢走数据，这里我们仅保留心跳和重连部分
+   * 或者，更简单的做法是：如果使用了 MQTT_Process 手动接收，就不要再依赖
+   * Service 的自动回调 只需要保证定期发送心跳即可。
+   */
+  static uint32_t last_check = 0;
+  if (HAL_GetTick() - last_check > 1000) {
+    last_check = HAL_GetTick();
+    if (is_connected) {
+      /* 简单的保活检查 */
+      static uint32_t last_ping = 0;
+      if (HAL_GetTick() - last_ping > (MQTT_KEEPALIVE * 1000) / 2) {
+        last_ping = HAL_GetTick();
+        MQTT_Heartbeat();
+      }
+    } else {
+      /* 掉线重连 */
+      MQTT_AutoReconnect();
+    }
+  }
 }
 
 /* ==========================================
@@ -673,21 +711,6 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload,
 
   if (rx_idx == 0)
     return false;
-
-  /* 调试：打印缓冲区前 64 字节 */
-  MQTT_Log("RX[%d]: ", rx_idx);
-  for (int k = 0; k < rx_idx && k < 32; k++) {
-    MQTT_Log("%02X ", rx_buffer[k]);
-  }
-  MQTT_Log("\r\n");
-
-  /* 0. 预处理：移除开头的无效字符（如 0x0D, 0x0A），避免缓冲区被垃圾数据占满 */
-  while (rx_idx > 0 &&
-         (rx_buffer[0] == '\r' || rx_buffer[0] == '\n' || rx_buffer[0] == 0)) {
-    memmove(rx_buffer, rx_buffer + 1, rx_idx - 1);
-    rx_idx--;
-    rx_buffer[rx_idx] = 0;
-  }
 
   /* 简单的解析逻辑：寻找 +IPD, */
   char *ipd_ptr = strstr((char *)rx_buffer, "+IPD,");
@@ -760,20 +783,11 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload,
 
           /* 移除已处理的数据 */
           int bytes_processed = ipd_offset + total_len;
-          /* 安全检查：防止溢出 */
-          if (bytes_processed > rx_idx)
-            bytes_processed = rx_idx;
-
           memmove(rx_buffer, rx_buffer + bytes_processed,
                   rx_idx - bytes_processed);
           rx_idx -= bytes_processed;
 
           return msg_received;
-        } else {
-          /* 收到 +IPD 头但数据未收全，等待下次处理 */
-          /* MQTT_Log("等待数据: Need %d, Have %d\r\n", total_len, rx_idx -
-           * ipd_offset); */
-          return false;
         }
       }
     }

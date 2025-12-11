@@ -25,6 +25,7 @@
 #define MQTT_PORT 1883
 #define MQTT_CLIENT_ID "xrak"
 #define MQTT_KEEPALIVE 60
+#define MAX_SUBSCRIPTIONS 10 /* 最大订阅数量 */
 
 /* ==========================================
  * ESP8266 AT 指令配置
@@ -118,10 +119,22 @@ typedef struct {
  *          - 不在列表中的旧主题：自动取消订阅
  *          - 已存在的主题：更新回调函数
  *
- * @param list 订阅配置数组
- * @param count 数组元素数量
+ * @note 列表必须以 {NULL, NULL} 结尾作为结束标志（哨兵模式），
+ *       无需再手动传递数组大小。
+ *
+ * 示例：
+ *   MQTT_SubscribeInfo my_subs[] = {
+ *       {"cmd/led", OnLedControl},
+ *       {"cmd/motor", OnMotorControl},
+ *       {NULL, NULL} // 必须以 NULL 结尾！
+ *   };
+ *
+ *   // 在初始化或运行时调用
+ *   MQTT_SetSubscriptions(my_subs);
+ *
+ * @param list 订阅配置数组，必须以 {NULL, NULL} 结尾
  */
-void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list, uint8_t count);
+void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list);
 
 /* ***************************无需调用******************************* */
 

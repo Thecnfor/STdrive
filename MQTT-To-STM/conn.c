@@ -9,8 +9,6 @@
 static bool is_connected = false;
 static MQTT_MessageHandler message_handler = NULL;
 
-/* 订阅管理 */
-#define MAX_SUBSCRIPTIONS 10
 typedef struct {
     char topic[64];
     bool is_subscribed;
@@ -534,14 +532,16 @@ bool MQTT_Unsubscribe(const char *topic)
     return MQTT_SendPacket(packet, idx);
 }
 
-void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list, uint8_t count)
+void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list)
 {
+    if (list == NULL) return;
+
     /* 1. 遍历当前订阅列表，移除不在新列表中的主题 */
     for (int i = 0; i < subscription_count; ) {
         bool found = false;
-        for (int j = 0; j < count; j++) {
-            if (list[j].topic != NULL && 
-                strncmp(subscriptions[i].topic, list[j].topic, sizeof(subscriptions[i].topic)) == 0) {
+        /* 遍历新列表查找是否存在 */
+        for (int j = 0; list[j].topic != NULL; j++) {
+            if (strncmp(subscriptions[i].topic, list[j].topic, sizeof(subscriptions[i].topic)) == 0) {
                 found = true;
                 break;
             }
@@ -556,7 +556,6 @@ void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list, uint8_t count)
             
             MQTT_Unsubscribe(topic_to_remove);
             /* MQTT_Unsubscribe 成功移除后，后续元素前移，当前索引 i 指向新元素，故无需 i++ */
-            /* 注意：若移除失败（理论上不应发生），可能导致死循环，但此处 Topic 来自列表，应必能找到 */
         } else {
             /* 在新列表中，保留 */
             i++;
@@ -564,12 +563,11 @@ void MQTT_SetSubscriptions(const MQTT_SubscribeInfo *list, uint8_t count)
     }
 
     /* 2. 遍历新列表，添加/更新主题 */
-    for (int j = 0; j < count; j++) {
-        if (list[j].topic == NULL) continue;
-
+    for (int j = 0; list[j].topic != NULL; j++) {
         /* MQTT_SubscribeCallback 会自动处理：
          * - 若已存在：更新回调函数
          * - 若不存在：添加到列表并发送订阅请求
+         * - 若已满：打印日志并返回 false
          */
         MQTT_SubscribeCallback(list[j].topic, list[j].handler);
     }

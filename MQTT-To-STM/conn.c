@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 
-
 /* ==========================================
  * 私有变量
  * ========================================== */
@@ -643,7 +642,9 @@ void MQTT_Test_Run(void) {
 
   /* 注意：由于注册了回调，消息接收由 MQTT_Service 自动处理，
      此处无需手动调用 MQTT_Process。
+     但若未启用定时器中断驱动，需在此处手动调用 MQTT_Service。
   */
+  MQTT_Service();
 }
 
 /* ==========================================
@@ -672,6 +673,16 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload,
 
   if (rx_idx == 0)
     return false;
+
+  /* 调试：打印缓冲区前 64 字节 */
+  MQTT_Log("RX_BUF[%d]: ", rx_idx);
+  for(int k=0; k<rx_idx && k<64; k++) {
+      if(rx_buffer[k] >= 32 && rx_buffer[k] <= 126)
+          MQTT_Log("%c", rx_buffer[k]);
+      else
+          MQTT_Log("[%02X]", rx_buffer[k]);
+  }
+  MQTT_Log("\r\n"); 
 
   /* 简单的解析逻辑：寻找 +IPD, */
   char *ipd_ptr = strstr((char *)rx_buffer, "+IPD,");
@@ -744,11 +755,20 @@ bool MQTT_Process(char *topic, uint16_t topic_size, char *payload,
 
           /* 移除已处理的数据 */
           int bytes_processed = ipd_offset + total_len;
+          /* 安全检查：防止溢出 */
+          if (bytes_processed > rx_idx)
+            bytes_processed = rx_idx;
+
           memmove(rx_buffer, rx_buffer + bytes_processed,
                   rx_idx - bytes_processed);
           rx_idx -= bytes_processed;
 
           return msg_received;
+        } else {
+          /* 收到 +IPD 头但数据未收全，等待下次处理 */
+          /* MQTT_Log("等待数据: Need %d, Have %d\r\n", total_len, rx_idx -
+           * ipd_offset); */
+          return false;
         }
       }
     }
